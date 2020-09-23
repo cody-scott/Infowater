@@ -1,1 +1,4 @@
 **Archive/
+**.vscode/
+**.pyc
+**__pycache__/

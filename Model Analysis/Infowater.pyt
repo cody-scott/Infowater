@@ -125,10 +125,19 @@ class AnalyzeModelReport(object):
         
 
     def do_work(self, file_path, output_folder, output_name, zone_sheet):
+        """Provides an analysis for reviewing model report output files. 
+        Main function loop to process report.
 
+        Args:
+            file_path (string): path to the .rpt file to analyze
+            output_folder (string): path to the folder to save report
+            output_name (string): name of file to save
+            zone_sheet (string): xlsx file cotaining ID and Zone labels - optional
+        """
         if output_folder is None:
             output_folder = ''
 
+        # checks to see if output file name ends with xlsx, if not append with xlsx
         if len(re.findall('\.xlsx$', output_name, re.IGNORECASE)) == 0:
                output_name += ".xlsx"
 
@@ -194,6 +203,14 @@ class AnalyzeModelReport(object):
 
 
     def create_search_text(self, _text):
+        """This generates the content to loop over for the search/analysis
+        Looks for the work "Hydraulic Status". This is the first line to start the analysis at, as each step will look from here onwards
+        Args:
+            _text (list(string)): full text of report file split by line
+
+        Returns:
+            list(string): list adjusted to the starting index at where hydraulic status was found
+        """
         hs_line = 0
         for i, l in enumerate(_text):
             if "Hydraulic Status" in l:
@@ -202,6 +219,16 @@ class AnalyzeModelReport(object):
 
 
     def _generate_time_groups(self, _text):
+        """Create the groupings that will be looped over for each time step.
+        This essentially just creates a list of the unique time steps that the functions will loop for the warnings, status, etc.
+        i don't actually remember why it does its loop pattern. might need to revisit this.
+
+        Args:
+            _text (list(string)): text list to generate groupings from
+
+        Returns:
+            list(string): list of each timestep
+        """
         time_group = []
         ws_count = 0
         line_list = []
@@ -224,6 +251,14 @@ class AnalyzeModelReport(object):
 
 
     def _element_name(self, value):
+        """Get the element name from the list based on the pattern
+
+        Args:
+            value (string): text to check for element name
+
+        Returns:
+            string: name of element if found, else None
+        """
         mt = re.findall(string=value, pattern='\w*_{1}\w*')
         if len(mt) > 0:
             mt = mt[0]
@@ -235,6 +270,14 @@ class AnalyzeModelReport(object):
 
     # Trials
     def get_net_balance_rows(self, _list_values):
+        """Determine which rows contain the content about balancing the network
+
+        Args:
+            _list_values (list(string)): list of the text for that time step to check
+
+        Returns:
+            tuple(int, int): starting row, ending row
+        """
         start_row = 0
         end_row = 9999
         for i, item in enumerate(_list_values):
@@ -246,6 +289,14 @@ class AnalyzeModelReport(object):
 
 
     def get_trial_list(self, _list_items):
+        """Generates list of rows that contain the word "Trial", indicating a trial row
+
+        Args:
+            _list_items (list(string)): description
+
+        Returns:
+            list(string): list of strings for each item that was a trial
+        """
         trials = []
         for i, item in enumerate(_list_items):
             if "Trial" in item:
@@ -276,6 +327,15 @@ class AnalyzeModelReport(object):
 
 
     def _generate_trials_dataframe(self, _list_values, _ts=None):
+        """Convert the input list to a dataframe of the trials
+
+        Args:
+            _list_values (list(list(string, int, string, string))): list of each trials
+            _ts (string, optional): time step value of the string. Defaults to None.
+
+        Returns:
+            DataFrame: data frame of the supplied trials
+        """
         bal_s, bal_e = self.get_net_balance_rows(_list_values)
         t_list = self.get_trial_list(_list_values[bal_s:bal_e])
         t_pairs = self._get_trials_pairs(t_list)
@@ -285,6 +345,15 @@ class AnalyzeModelReport(object):
 
 
     def _generate_warning_dataframe(self, _list_values, _ts=None):
+        """Generate data frame from supplied warning input list
+
+        Args:
+            _list_values (list(list(string, string, string))): list of calculated warnings
+            _ts (type, optional): description. Defaults to None.
+
+        Returns:
+            DataFrame: dataframe of the calcualted warnings
+        """
         warnings = []
         for row in _list_values:
             row = row.replace("WARNING: ", "")
@@ -296,6 +365,14 @@ class AnalyzeModelReport(object):
 
 
     def _warning_type(self, value):
+        """Return the type of warning
+
+        Args:
+            value (string): string of the row to check
+
+        Returns:
+            string: type of warning detected
+        """
         value = value.upper()
         if "cannot deliver flow".upper() in value:
             er = "FLOW"
@@ -326,6 +403,17 @@ class AnalyzeModelReport(object):
 
 
     def format_df_to_time(self, _df):
+        """Convert the time values in a dataframe to the appropriate numerical representations.
+
+        Converts Hour, Minute, Second to the int value
+        Converts Timestep to the total number of seconds represented by its value
+
+        Args:
+            _df ([type]): [description]
+
+        Returns:
+            [type]: [description]
+        """
         _df["Hour"] = _df["Time"].apply(lambda x: int(x.split(":")[0]))
         _df["Minute"] = _df["Time"].apply(lambda x: int(x.split(":")[1]))
         _df["Second"] = _df["Time"].apply(lambda x: int(x.split(":")[2]))
@@ -337,6 +425,18 @@ class AnalyzeModelReport(object):
 
 
     def _generate_complete_trial_dataframe(self, _list_values, _ts=None):
+        """Split list rows into subcomponents (trials, supplied, demanded, stored) then calculates the data from each.
+        This data is essentially the summary at the end of each timestep.
+
+        Each group is passed to the generic function with its respective search pattern
+
+        Args:
+            _list_values ([list(string)]): [list of strings containing the "trial" rows]
+            _ts ([??], optional): [time component to add to output dataframe. can't recall if its a scalar or a list]. Defaults to None.
+
+        Returns:
+            [DataFrame]: [Data frame of calculated results]
+        """
         t_pat = re.compile("(?<=Balanced after )\d*(?= trials)")
         s_pat = re.compile("(?<=Total Supplied:\s\s)\d*.\d*(?=\w*)")
         d_pat = re.compile("(?<=Total Demanded:\s\s)\d*.\d*(?=\w*)")
@@ -353,6 +453,19 @@ class AnalyzeModelReport(object):
 
 
     def _get_trial_pattern_data(self, _list_values, pattern):
+        """Gets the first float value found for the supplied list.
+
+        Loop each value and converts to float if a number is found based on the supplied pattern
+
+        returns first value it finds or None
+
+        Args:
+            _list_values ([type]): [description]
+            pattern ([regex pattern]): [pattern to check for a number]
+
+        Returns:
+            [float]: [number found based on pattern]
+        """
         data = [float(y) for x in _list_values for y in pattern.findall(string=x) if len(y) > 0]
         if len(data) > 0:
             return data[0]
@@ -361,6 +474,15 @@ class AnalyzeModelReport(object):
 
 
     def determine_timestamp(self, _list_values):
+        """Determine the time stamp value for that step
+        Function checks each row until it finds an appropriate time step, then returns that
+
+        Args:
+            _list_values ([list(string)]): [list of text rows to check]
+
+        Returns:
+            [string]: [time step string]
+        """
         for item in _list_values:
             mt = re.findall(pattern='^\s*(\d{1,2}:\d{1,2}:\d{1,2})', string=item)
             if mt is None:
@@ -369,6 +491,14 @@ class AnalyzeModelReport(object):
 
 
     def split_warnings(self, _list_values):
+        """Split the supplied input rows into ones that contain warnings, and ones that do not
+
+        Args:
+            _list_values ([list(string)]): [list of text rows]
+
+        Returns:
+            [list(string), list(string)]: [list of non-warning items, list of warning items]
+        """
         non_warnings = []
         warnings = []
         for item in _list_values:
@@ -382,6 +512,13 @@ class AnalyzeModelReport(object):
     # region Excel
 
     def _export_to_excel(self, frame_list, output_folder, output_name=None):
+        """Basic export of the data frame(s) to excel at the supplied location/name
+
+        Args:
+            frame_list ([list(DataFrame)]): [list of data frames to export]
+            output_folder ([string]): [folder to save report excel file]
+            output_name ([string], optional): [name of the excel file to save]. Defaults to None.
+        """
         if output_name is None:
             output_name = "Model_Report_Analysis.xlsx"
 
@@ -396,6 +533,22 @@ class AnalyzeModelReport(object):
 
 
     def _export_to_excel_tables(self, frame_list, output_folder, output_name):
+        """Fancy export of the dataframes to excel
+        Change from the basic is instead of using the generic export function, 
+        this one creates a workbook object directly.
+
+        Main difference is this routine supports modifying the column widths 
+        for making it look better when opening, as well as creating the Excel Tables
+        by default.
+
+        Relies on an additional package, which i think is included in arcgis pro.
+        Fallsback to the other method if that package isn't detected.
+
+        Args:
+            frame_list ([type]): [description]
+            output_folder ([type]): [description]
+            output_name ([type]): [description]
+        """
         if output_name is None:
             output_name = "Model_Report_Analysis.xlsx"
 
@@ -418,6 +571,13 @@ class AnalyzeModelReport(object):
 
 
     def _frame_to_table(self, frame, name, wb):
+        """Concert a dataframe to an excel table, and appends to the workbook
+
+        Args:
+            frame ([DataFrame]): [data frame to process]
+            name ([string]): [Name of Table]
+            wb ([Workbook]): [workbook object to save to]
+        """
         ws = wb.create_sheet()
         ws.title = name
 
@@ -450,6 +610,12 @@ class AnalyzeModelReport(object):
 
 
     def _format_column_width(self, frame, ws):
+        """Calculate and adjust column widths
+
+        Args:
+            frame ([DataFrame]): [data frame containing data]
+            ws ([Worksheet]): [worksheet containing columns to adjust]
+        """
         measurer = np.vectorize(len)
         widths = [max(8, max(x)) + 2 for x in list(zip(measurer(frame.columns), measurer(frame.values.astype(str)).max(axis=0)))]
         # print(widths)
@@ -458,6 +624,18 @@ class AnalyzeModelReport(object):
     # endregion
 
     def _merge_zones(self, _df, _zone_df):
+        """Merge input dataframe with the supplied Zone dataframe
+        This is to add the column for which zone each id is contained in.
+
+        Joins based on the Element column in input, and ID in zone dataframe
+
+        Args:
+            _df ([DataFrame]): [input data frame. The "Left"]
+            _zone_df ([DataFrame]): [Zone Data frame. The "Right"]
+
+        Returns:
+            [type]: [description]
+        """
         out_df = _df.merge(
             how='left', left_on='Element',
             right_on='ID', right=_zone_df
@@ -538,8 +716,27 @@ class ConvertModelReport(object):
 #---------------------------------
 
 class ModelComparison(object):
+    """
+    Easiest way to think of the tool is a bit of a triangle. 
+    Tool loops each pressure zone > site > junctions/tank/pipes/poi > plotting functions
+
+    a stepped approach to reduce down to the most general at the lowest level and more specific as you move up 
+
+
+    """
     def __init__(self):
-        """Define the tool (tool name is the name of the class)."""
+        """Init a bunch of items
+
+        most are set to None initially, then properly assigned in the function
+
+        set color maps for the plots, including a fallback if a failure (crs/cls)
+        sets some class globals to none for the new/old/comparison/scada table data
+        sets the horizonal/vertical spacing for plots (hs, ws)
+        sets the bounding boxes for legend
+        sets point of interest limit modifier. This is the buffer added above and below the point of interest to expand if required
+        sets labels for the models
+        sets pdf prefix used in output file. This is useful when plotting two to the same folder (average/max day for example)
+        """
         self.label = "Model Comparison"
         self.description = "Generate PDF outputs of two models to compare"
         self.canRunInBackground = False
@@ -569,7 +766,8 @@ class ModelComparison(object):
         self.new_model_label = None
         self.old_model_label = None
 
-               
+        self.pdf_prefix = None        
+       
 
     def getParameterInfo(self):
         """Define parameter definitions"""
@@ -645,7 +843,17 @@ class ModelComparison(object):
         return
 
     def execute(self, parameters, messages):
-        """The source code of the tool."""
+        """This is the function called when running in arcgis pro
+        parameters are the inputs for the tool, but it then passes along to the do_work function.
+
+        Do work is there so if called externally (from a script) all the params are defined as variables not a big list 
+
+        only change ever needed if adding new param
+
+        Args:
+            parameters (list(Parameter,Parameter,Parameter,Parameter,Parameter,Parameter)): [input parameters sent from arc]
+            messages ([type]): [description]
+        """
 
         # [arcpy.AddMessage(str(i.valueAsText)) for i in parameters]
 
@@ -659,9 +867,24 @@ class ModelComparison(object):
         self.do_work(_new_model, _old_model, _comp_sheet, _scada, _zone, _pdf_f)
         return
 
-    def do_work(self, new_model, old_model, comparison_sheet, scada, zone, pdf_folder, new_model_label=None, old_model_label=None):
+    def do_work(self, new_model, old_model, comparison_sheet, scada, zone, pdf_folder, new_model_label=None, old_model_label=None, pdf_prefix=None):
+        """Main function loop to process the data. Tool with generate unique pdfs per zone supplied in the comparison sheet
+
+        Args:
+            new_model (string): location of the new model output folder
+            old_model (string): location of the old model output folder
+            comparison_sheet (string): path to the excel file with the comparison tables
+            scada (string): path to the scada comparison data
+            zone (list(string)): list of subzones to only work on
+            pdf_folder (string): path to folder to save pdf
+            new_model_label ([string, optional): Optional name for the new model to show on plots. Defaults to None.
+            old_model_label (string, optional): Optional name for the new model to show on plots. Defaults to None.
+            pdf_prefix (string, optional): Optional prefix to apply to the output pdfs. Defaults to None.
+        """
         _start_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
         arcpy.AddMessage(_start_time)
+
+        self.pdf_prefix = "" if pdf_prefix is None else pdf_prefix
 
         self.new_model_label = "New Model" if new_model_label is None else new_model_label
         self.old_model_label = "Old Model" if old_model_label is None else old_model_label
@@ -693,14 +916,33 @@ class ModelComparison(object):
             arcpy.AddMessage("Zone - {}".format(zone))
             arcpy.SetProgressorPosition(i_iteration)
             arcpy.SetProgressorLabel("Zone - {}".format(zone))
-            with PdfPages(os.path.join(pdf_folder, '{}.pdf'.format(zone))) as pp:
+            with PdfPages(os.path.join(pdf_folder, '{}{}.pdf'.format(pdf_prefix, zone))) as pp:
                 self.zone_base(self.comparison_table.loc[self.comparison_table["Pressure_Zone"] == zone], pp)
         arcpy.AddMessage("Done")
 
     def load_comparison_file(self, file_path):
+        """Loads the comparison file to a dataframe
+
+        Args:
+            file_path (string): path to the comparison excel file
+
+        Returns:
+            DataFrame: data frame of the comparison file
+        """
         return pd.read_excel(file_path)
 
     def load_scada(self, scada_path):
+        """Load the scada data to a dataframe
+
+        Convert the time column to a datetime object and apply the Hour/Minute columns based on the input column
+        Need to match the format below. Excel has a pretty standard format.
+
+        Args:
+            scada_path (string): path to the excel document containing scada data
+
+        Returns:
+            DataFrame: Data frame of the scada data. Returns None if error
+        """
         try:
             if ".csv" in scada_path:
                 df = pd.read_csv(scada_path)
@@ -717,17 +959,20 @@ class ModelComparison(object):
             df['Hour'] = df.index.hour
 
             return df
-        # except:
-        #     pass
-        # try:
-        #     self.sc = pd.read_excel(scada_path)
-        #     self.sc["Time"] = self.sc["Time"].apply(lambda x: x+1)
-        #     self.sc = self.sc.set_index("Time")
-        #     return self.sc
         except:
             return None
 
     def load_dbf(self, scenario_path, dbf_name):
+        """Load the model data dbf file and converts to DataFrame
+        This is the junction, pipes, valve, tanks, etc
+        
+        Args:
+            scenario_path (string): path to the scenario folder. 
+            dbf_name (string): Name of the dbf file
+
+        Returns:
+            DataFrame: Data frame of the feature
+        """
         try:
             # updated logic for arcigs pro. doesnt required simpledbf package this way
             _in_table = os.path.join(scenario_path, dbf_name)
@@ -742,6 +987,14 @@ class ModelComparison(object):
             return None
 
     def load_model_data(self, scenario):
+        """Loads the model components from the scenario folder
+
+        Args:
+            scenario (string): path of the scenario
+
+        Returns:
+            dict(string: DataFrame, string: DataFrame, string: DataFrame): dictionary of the junctions, pipes and tanks from the model data
+        """
         jct_data = self.load_dbf(scenario, "JunctOut.dbf")
         ppe_data = self.load_dbf(scenario, "PipeOut.dbf")
         tank_data = self.load_dbf(scenario, "TankOut.dbf")
@@ -750,6 +1003,13 @@ class ModelComparison(object):
     # region Fill with JP
 
     def POI_chart(self, poi_data, pdf_f=None):
+        """Function for generating chunks to pass to poi charting function
+        also gets the limits to pass along for all the plots
+
+        Args:
+            poi_data (DataFrame): data frame of the point of interest data
+            pdf_f (PDFPages, optional): PDF Page to plot to. Defaults to None.
+        """
         poi_data = poi_data[["Old_Id", "New_Id", "Info"]]
 
         def chunks(l, n):
@@ -762,6 +1022,15 @@ class ModelComparison(object):
             self._generate_poi_subcharts(vals, pdf_f, pl)
 
     def _get_poi_lims(self, poi_data):
+        """Calculate limits of the POI charts. Since all limits are shared between every chart, this creates a constant value
+        finds the minimum and maximum values in all the data for the Head then returns a buffered range from that
+
+        Args:
+            poi_data (DataFrame): data frame of all point of interest data
+
+        Returns:
+            tuple(int, int): tuple of the min/max limits
+        """
         od = self.old_scenario_data['junctions']
         nd = self.new_scenario_data['junctions']
         ov = poi_data["Old_Id"].values
@@ -777,7 +1046,16 @@ class ModelComparison(object):
             return (mn - lim_mod, mx + lim_mod)
 
     def _generate_poi_subcharts(self, poi_list, pdf_f=None, poi_lims=None):
+        """Create the individual subplot page
+        Creates a 4x4 grid of the point of interest pages
 
+        For each plot on the grid it will plot the new line, then old line for each pair of model IDs in the new/old data
+
+        Args:
+            poi_list (DataFrame): data frame of the old/new/info columns from comparison sheet
+            pdf_f (PDFPage, optional): PDF document to plot to. Defaults to None.
+            poi_lims (tuple(int, int), optional): Optional limits to apply to all plots. Defaults to None.
+        """
         fig = plt.figure()
         fig.set_size_inches(17, 11)
         fig.suptitle("Points of Interest")
@@ -799,7 +1077,7 @@ class ModelComparison(object):
 
         for item, gr_index in zip(poi_list.iterrows(), index_list):
             ax = fig.add_subplot(gr[gr_index[0], gr_index[1]])
-            idx, values = item
+            _, values = item
 
             for i in list_items:
                 if not pd.isnull(values[i[0]]):
@@ -827,6 +1105,16 @@ class ModelComparison(object):
             plt.close()
 
     def _plot_poi(self, ax, _id, color, label, data):
+        """Plot the individual point of interest to an axis object
+        also plots the daily average to the same plot from the same data
+
+        Args:
+            ax (axis): matplotlib axis to plot to
+            _id (string): ID of the item to plot
+            color (RGB): color to apply
+            label (string): label of line
+            data (DataFrame): input data from model
+        """
         plot_data = data.loc[data["ID"] == _id].set_index("TIME_STEP")
         ax.plot(plot_data["HEAD"], label=label, color=color)
 
@@ -836,6 +1124,14 @@ class ModelComparison(object):
         ax.set_xticks(list(range(1, 25)))
 
     def station_without_tank_graph(self, junction, pipe, site_name=None, pdf_f=None):
+        """Plot site (station) that does not contain a tank
+
+        Args:
+            junction (DataFrame): junctions data frame
+            pipe (DataFrame): pipes data frame
+            site_name (string, optional): Name of site to label. Defaults to None.
+            pdf_f (PDFPage, optional): pdf document to plot to. Defaults to None.
+        """
         fig = plt.figure()
         fig.set_size_inches(17, 11)
         if site_name is not None:
@@ -855,6 +1151,15 @@ class ModelComparison(object):
             plt.close()
 
     def station_with_tank_graph(self, junction, pipe, tank, site_name=None, pdf_f=None):
+        """Plot site (station) that contains a tank
+
+        Args:
+            junction (DataFrame): junctions data frame
+            pipe (DataFrame): pipes data frame
+            tank (DataFrame): tanks data frame
+            site_name (string, optional): Name of site to label. Defaults to None.
+            pdf_f (PDFPage, optional): pdf document to plot to. Defaults to None.
+        """
         fig = plt.figure()
         fig.set_size_inches(17, 11)
         if site_name is not None:
@@ -876,6 +1181,13 @@ class ModelComparison(object):
             plt.close()
 
     def station_tank_graph(self, tank, site_name=None, pdf_f=None):
+        """Plot site (station) that only contains a tank
+
+        Args:
+            tank (DataFrame): tanks data frame
+            site_name (string, optional): Name of site to label. Defaults to None.
+            pdf_f (PDFPage, optional): pdf document to plot to. Defaults to None.
+        """
         fig = plt.figure()
         fig.set_size_inches(17, 11)
         if site_name is not None:
@@ -893,6 +1205,13 @@ class ModelComparison(object):
 
 
     def station_junction_only(self, junction, site_name=None, pdf_f=None):
+        """Plot site (station) that only contains a junction
+
+        Args:
+            junction (DataFrame): junctions data frame
+            site_name (string, optional): Name of site to label. Defaults to None.
+            pdf_f (PDFPage, optional): pdf document to plot to. Defaults to None.
+        """
         fig = plt.figure()
         fig.set_size_inches(17, 11)
         if site_name is not None:
@@ -909,6 +1228,13 @@ class ModelComparison(object):
             plt.close()
 
     def station_pipe_only(self, pipe, site_name=None, pdf_f=None):
+        """Plot site (station) that only contains a pipe
+
+        Args:
+            pipe (DataFrame): pipes data frame
+            site_name (string, optional): Name of site to label. Defaults to None.
+            pdf_f (PDFPage, optional): pdf document to plot to. Defaults to None.
+        """
         fig = plt.figure()
         fig.set_size_inches(17, 11)
         if site_name is not None:
@@ -926,6 +1252,12 @@ class ModelComparison(object):
 
 
     def plot_junction(self, junction, ax):
+        """Plot junction to axis
+
+        Args:
+            junction (DataFrame): comparison junctions data frame
+            ax (axes): target axes to plot to
+        """
         ax.set_title("Junction")
 
         y_field = "HEAD"
@@ -939,6 +1271,12 @@ class ModelComparison(object):
         self.test_lims(ax)
 
     def plot_pipe(self, pipe, ax):
+        """Plot pipe to axis
+
+        Args:
+            pipe (DataFrame): comparison pipe data frame
+            ax (axes): target axes to plot to
+        """
         ax.set_title("Pipe")
         y_field = "FLOW"
 
@@ -955,6 +1293,12 @@ class ModelComparison(object):
         self.test_lims(ax)
 
     def plot_tank(self, tank, ax):
+        """Plot tank to axis
+
+        Args:
+            tank (DataFrame): comparison tank data frame
+            ax (axes): target axes to plot to
+        """
         ax.set_title("Tank")
 
         y_field = "F__VOLUME"
@@ -972,6 +1316,17 @@ class ModelComparison(object):
             ax.set_ylim((ax.get_ylim()[0], 100.2))
 
     def plot_generic(self, data, ax, p, y_field):
+        """This is the generic plotting function that the individual types pass to
+        Reasoning is its easier to apply a single style of plotting and just tell the plot to try and plot in the same way each time
+
+        Inputs are how you vary what the data points are that its plotting
+
+        Args:
+            data (DataFrame): comparison feature data frame with IDs to plot
+            ax (axes): target axes to plot to
+            p (string): type of feature plotting. This is going to pull the model data
+            y_field (string): y field (column) that will be used for the vertical
+        """
         ls = [
             [self.new_scenario_data, "New_Id", self.cls["NewData"], self.new_model_label],
             [self.old_scenario_data, "Old_Id", self.cls["OldData"], self.old_model_label],
@@ -1007,6 +1362,12 @@ class ModelComparison(object):
         ax.set_xticklabels(list(range(1, 24)))
 
     def test_lims(self, ax):
+        """Check the limits of the supplied plot.
+        If its too close, then expand it out to a specified buffer
+
+        Args:
+            ax (axes): axes object to evaluate
+        """
         yl = ax.get_ylim()
 
         if yl[1] - yl[0] < 5:
@@ -1016,6 +1377,15 @@ class ModelComparison(object):
             ax.set_ylim((b, t))
 
     def generate_legend(self, fig):
+        """Generates the appropriate legend for the plot, and position at the top.
+
+        Checks every axes in the figure and reduces down to the unique items only, then repositions at the top
+
+        All common items should have the same color scheme so that would be fine.
+
+        Args:
+            fig (figure): figure object to evalulate
+        """
         handles = []
         labels = []
         for a in fig.axes:
@@ -1047,7 +1417,7 @@ class ModelComparison(object):
         Might be related to the 2 value limits or something else.
 
         Either way probably best to just fix it in the model by reversing the pipe to the appropriate direction.
-        I have put this as a flag to print out instead, but kept code for posterit 
+        I have put this as a flag to print out instead, but kept code for reference
         """
         vals = []
         for l in ax.get_lines():
@@ -1071,6 +1441,20 @@ class ModelComparison(object):
             # ax.autoscale_view()
 
     def plot_daily_avg(self, data, ax, color, label):
+        """Calculate and plot the daily median of the supplied data
+        Line will be plotted as a dashed style.
+
+        One tweak could be supplying the averaging function
+
+        Args:
+            data (DataFrame or Series): data frame of the data to calculate average
+            ax (axes): Axes to plot the daily average to
+            color (RGB): color to apply to line
+            label (string): label to apply. Will add " - Median" to it
+
+        Returns:
+            [type]: [description]
+        """
         nd = data.median()
         if type(nd) is pd.Series:
             nd = nd.median()
@@ -1078,6 +1462,16 @@ class ModelComparison(object):
                    label="{} - Median".format(label))
 
     def zone_base(self, zone_data, pdf_f=None):
+        """Base function to loop the zones to plot
+
+        Higher function is passing a data frame of the comparison data that is reduced to a single Zone.
+
+        this then gets the group of sites within that data frame, based on the site column, then loops and plots each site
+
+        Args:
+            zone_data (DataFrame): comparison data data frame
+            pdf_f (PDFPage, optional): Target PDF document. Defaults to None.
+        """
         poi_data = zone_data.loc[(zone_data["Site"] == "POI")]
         data = zone_data.loc[~(zone_data["Site"] == "POI")]
         _sites = sorted(data["Site"].unique())
@@ -1089,6 +1483,15 @@ class ModelComparison(object):
         self.POI_chart(poi_data, pdf_f)
 
     def site_base(self, site_data, pdf_f=None):
+        """Loop for plotting each site within the pressure zone
+        This loops each item for that site and plots.
+
+        Checks to see if the site has junctions, pipes, tanks and determines which plotting function to pass along to
+
+        Args:
+            site_data (DataFrame): comparison data frame of site data 
+            pdf_f (PDFPage, optional): target PDF document to plot to. Defaults to None.
+        """
         site_name = list(site_data["Site"])[0]
         site_junction = site_data.loc[site_data["Type"] == "Junction"]
         site_pipe = site_data.loc[site_data["Type"] == "Pipe"]
