@@ -729,11 +729,16 @@ class ModelComparison(object):
 
         most are set to None initially, then properly assigned in the function
 
+        you can use this to override the defaults if plotting from a script. unable from arcgis pro.
+
+        Change the values after you create the class
+
         set color maps for the plots, including a fallback if a failure (crs/cls)
         sets some class globals to none for the new/old/comparison/scada table data
         sets the horizonal/vertical spacing for plots (hs, ws)
         sets the bounding boxes for legend
         sets point of interest limit modifier. This is the buffer added above and below the point of interest to expand if required
+        sets the limit range for all site plots. defaults to 5.
         sets labels for the models
         sets pdf prefix used in output file. This is useful when plotting two to the same folder (average/max day for example)
         """
@@ -762,6 +767,8 @@ class ModelComparison(object):
         self.bbox_y = 1.1
 
         self.poi_lim_mod = 2
+
+        self.lim_range = 5
 
         self.new_model_label = None
         self.old_model_label = None
@@ -1207,7 +1214,6 @@ class ModelComparison(object):
             pdf_f.savefig()
             plt.close()
 
-
     def station_junction_only(self, junction, site_name=None, pdf_f=None):
         """Plot site (station) that only contains a junction
 
@@ -1253,7 +1259,6 @@ class ModelComparison(object):
         if pdf_f is not None:
             pdf_f.savefig()
             plt.close()
-
 
     def plot_junction(self, junction, ax):
         """Plot junction to axis
@@ -1374,10 +1379,12 @@ class ModelComparison(object):
         """
         yl = ax.get_ylim()
 
-        if yl[1] - yl[0] < 5:
+        _lim_range = self.lim_range
+
+        if yl[1] - yl[0] < _lim_range:
             mid = (yl[1] - yl[0]) + yl[0]
-            b = round(mid - 5, 1)
-            t = round(mid + 5, 1)
+            b = round(mid - _lim_range, 1)
+            t = round(mid + _lim_range, 1)
             ax.set_ylim((b, t))
 
     def generate_legend(self, fig):
