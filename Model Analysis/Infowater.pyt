@@ -1006,6 +1006,8 @@ class ModelComparison(object):
         """Function for generating chunks to pass to poi charting function
         also gets the limits to pass along for all the plots
 
+        chunks are used since its going to be a 4x4 box, so just get groups of 4
+
         Args:
             poi_data (DataFrame): data frame of the point of interest data
             pdf_f (PDFPages, optional): PDF Page to plot to. Defaults to None.
@@ -1050,6 +1052,8 @@ class ModelComparison(object):
         Creates a 4x4 grid of the point of interest pages
 
         For each plot on the grid it will plot the new line, then old line for each pair of model IDs in the new/old data
+
+        Nice part is its only adding subplots when it loops, so if i only pass 2 instead of 4, it will just plot the first 2 and leave the last two spots blank
 
         Args:
             poi_list (DataFrame): data frame of the old/new/info columns from comparison sheet
