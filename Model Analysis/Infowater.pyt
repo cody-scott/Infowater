@@ -13,7 +13,8 @@ import re
 
 import argparse
 
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict
+import numbers
 
 import datetime
 
@@ -741,6 +742,9 @@ class ModelComparison(object):
         sets the limit range for all site plots. defaults to 5.
         sets labels for the models
         sets pdf prefix used in output file. This is useful when plotting two to the same folder (average/max day for example)
+
+        self.averaging_function: set the function that will generate the average for the plots. Defaults to median, can use mean or any other function that operates over a pd.series
+        self.averaging_function_lbls: add to this dictionary the averaging function as the key and a string label
         """
         self.label = "Model Comparison"
         self.description = "Generate PDF outputs of two models to compare"
@@ -774,6 +778,13 @@ class ModelComparison(object):
         self.old_model_label = None
 
         self.pdf_prefix = None        
+
+        self.averaging_function = np.median
+
+        self.averaging_function_lbls = {
+            np.median: "Median",
+            np.mean: "Mean"
+        }
        
 
     def getParameterInfo(self):
@@ -825,13 +836,49 @@ class ModelComparison(object):
             direction="Input"
         )
 
+        param6 = arcpy.Parameter(
+            displayName="Old Model Label",
+            name='old_model_lbl',
+            datatype="GPString",
+            parameterType='Optional',
+            direction='Input'
+        )
+
+        param7 = arcpy.Parameter(
+            displayName="New Model Label",
+            name='new_model_lbl',
+            datatype="GPString",
+            parameterType='Optional',
+            direction='Input'
+        )
+
+        param8 = arcpy.Parameter(
+            displayName="PDF Prefix",
+            name='pdf_prefix',
+            datatype="GPString",
+            parameterType='Optional',
+            direction='Input'
+        )
+
+        param9 = arcpy.Parameter(
+            displayName="Average Function",
+            name='avg_function',
+            datatype="GPString",
+            parameterType='Required',
+            direction='Input'
+        )
+
         param0.filter.list = ['File System']
         param1.filter.list = ['File System']
         param2.filter.list = ['xls', 'xlsx']
         param3.filter.list = ['File System']
         param5.filter.list = ['xls', 'xlsx']
-        
-        params = [param0, param1, param2, param3, param4, param5]
+
+        param9.filter.type = "ValueList"
+        param9.values = "Median"
+        param9.filter.list = ["Mean", "Median"]
+
+        params = [param0, param1, param2, param3, param4, param5, param6, param7, param8, param9]
         return params
 
     def isLicensed(self):
@@ -870,8 +917,25 @@ class ModelComparison(object):
         _pdf_f = parameters[3].valueAsText        
         _zone = parameters[4].valueAsText
         _scada = parameters[5].valueAsText
+
+        _new_lbl = parameters[6].valueAsText
+        _new_lbl = _new_lbl if _new_lbl != '' else None
         
-        self.do_work(_new_model, _old_model, _comp_sheet, _scada, _zone, _pdf_f)
+        _old_lbl = parameters[7].valueAsText
+        _old_lbl = _old_lbl if _old_lbl != '' else None
+
+        _pdf_prefix = parameters[8].valueAsText
+        _pdf_prefix = _pdf_prefix if _pdf_prefix != '' else None
+
+        avg_dict = {
+            'Mean': np.mean,
+            'Median': np.median
+        }
+
+        _avg_function = parameters[9].valueAsText
+        self.averaging_function = avg_dict.get(_avg_function, np.mean)
+
+        self.do_work(_new_model, _old_model, _comp_sheet, _scada, _zone, _pdf_f, _new_lbl, _old_lbl, _pdf_prefix)
         return
 
     def do_work(self, new_model, old_model, comparison_sheet, scada, zone, pdf_folder, new_model_label=None, old_model_label=None, pdf_prefix=None):
@@ -1455,7 +1519,10 @@ class ModelComparison(object):
         """Calculate and plot the daily median of the supplied data
         Line will be plotted as a dashed style.
 
-        One tweak could be supplying the averaging function
+        Will load the averaging function supplied. Can be a custom one, median or mean.
+        Must be set for the class attribute to be loaded here.
+
+        Default is mean.
 
         Args:
             data (DataFrame or Series): data frame of the data to calculate average
@@ -1466,11 +1533,13 @@ class ModelComparison(object):
         Returns:
             [type]: [description]
         """
-        nd = data.median()
+        _func = self.averaging_function
+        _lbl = self.averaging_function_lbls.get(_func, "Other")
+        nd = _func(data)
         if type(nd) is pd.Series:
-            nd = nd.median()
+            nd = _func(data)
         return ax.axhline(linewidth=2, color=color, y=nd, alpha=0.5, linestyle='dashed',
-                   label="{} - Median".format(label))
+                   label="{} - {}".format(label, _lbl))
 
     def zone_base(self, zone_data, pdf_f=None):
         """Base function to loop the zones to plot
@@ -1527,3 +1596,186 @@ class ModelComparison(object):
                 self.station_without_tank_graph(site_junction, site_pipe, site_name,
                                            pdf_f=pdf_f)
     # endregion
+
+
+
+
+# ------------
+class FastDTW(object):
+    """This is the fastdtw from the pip library fastdtw
+    Only change was adding the self class values to everything
+    https://github.com/slaypni/fastdtw/blob/master/fastdtw/fastdtw.py
+
+    Read about Dynamic time warping here
+    https://en.wikipedia.org/wiki/Dynamic_time_warping
+
+    I've put it in here directly since i don't want to install extra libs
+    Should really need to update this either. 
+    """
+    def __init__(self):
+        pass
+
+    def fastdtw(self, x, y, radius=1, dist=None):
+        ''' return the approximate distance between 2 time series with O(N)
+            time and memory complexity
+            Parameters
+            ----------
+            x : array_like
+                input array 1
+            y : array_like
+                input array 2
+            radius : int
+                size of neighborhood when expanding the path. A higher value will
+                increase the accuracy of the calculation but also increase time
+                and memory consumption. A radius equal to the size of x and y will
+                yield an exact dynamic time warping calculation.
+            dist : function or int
+                The method for calculating the distance between x[i] and y[j]. If
+                dist is an int of value p > 0, then the p-norm will be used. If
+                dist is a function then dist(x[i], y[j]) will be used. If dist is
+                None then abs(x[i] - y[j]) will be used.
+            Returns
+            -------
+            distance : float
+                the approximate distance between the 2 time series
+            path : list
+                list of indexes for the inputs x and y
+            Examples
+            --------
+            >>> import numpy as np
+            >>> import fastdtw
+            >>> x = np.array([1, 2, 3, 4, 5], dtype='float')
+            >>> y = np.array([2, 3, 4], dtype='float')
+            >>> fastdtw.fastdtw(x, y)
+            (2.0, [(0, 0), (1, 0), (2, 1), (3, 2), (4, 2)])
+        '''
+        x, y, dist = self.__prep_inputs(x, y, dist)
+        return self.__fastdtw(x, y, radius, dist)
+
+
+    def __difference(self, a, b):
+        return abs(a - b)
+
+
+    def __norm(self, p):
+        return lambda a, b: np.linalg.norm(np.atleast_1d(a) - np.atleast_1d(b), p)
+
+
+    def __fastdtw(self, x, y, radius, dist):
+        min_time_size = radius + 2
+
+        if len(x) < min_time_size or len(y) < min_time_size:
+            return self.dtw(x, y, dist=dist)
+
+        x_shrinked = self.__reduce_by_half(x)
+        y_shrinked = self.__reduce_by_half(y)
+        distance, path = \
+            self.__fastdtw(x_shrinked, y_shrinked, radius=radius, dist=dist)
+        window = self.__expand_window(path, len(x), len(y), radius)
+        return self.__dtw(x, y, window, dist=dist)
+
+
+    def __prep_inputs(self, x, y, dist):
+        x = np.asanyarray(x, dtype='float')
+        y = np.asanyarray(y, dtype='float')
+
+        if x.ndim == y.ndim > 1 and x.shape[1] != y.shape[1]:
+            raise ValueError('second dimension of x and y must be the same')
+        if isinstance(dist, numbers.Number) and dist <= 0:
+            raise ValueError('dist cannot be a negative integer')
+
+        if dist is None:
+            if x.ndim == 1:
+                dist = self.__difference
+            else: 
+                dist = self.__norm(p=1)
+        elif isinstance(dist, numbers.Number):
+            dist = self.__norm(p=dist)
+
+        return x, y, dist
+
+
+    def dtw(self, x, y, dist=None):
+        ''' return the distance between 2 time series without approximation
+            Parameters
+            ----------
+            x : array_like
+                input array 1
+            y : array_like
+                input array 2
+            dist : function or int
+                The method for calculating the distance between x[i] and y[j]. If
+                dist is an int of value p > 0, then the p-norm will be used. If
+                dist is a function then dist(x[i], y[j]) will be used. If dist is
+                None then abs(x[i] - y[j]) will be used.
+            Returns
+            -------
+            distance : float
+                the approximate distance between the 2 time series
+            path : list
+                list of indexes for the inputs x and y
+            Examples
+            --------
+            >>> import numpy as np
+            >>> import fastdtw
+            >>> x = np.array([1, 2, 3, 4, 5], dtype='float')
+            >>> y = np.array([2, 3, 4], dtype='float')
+            >>> fastdtw.dtw(x, y)
+            (2.0, [(0, 0), (1, 0), (2, 1), (3, 2), (4, 2)])
+        '''
+        x, y, dist = self.__prep_inputs(x, y, dist)
+        return self.__dtw(x, y, None, dist)
+
+
+    def __dtw(self, x, y, window, dist):
+        len_x, len_y = len(x), len(y)
+        if window is None:
+            window = [(i, j) for i in range(len_x) for j in range(len_y)]
+        window = ((i + 1, j + 1) for i, j in window)
+        D = defaultdict(lambda: (float('inf'),))
+        D[0, 0] = (0, 0, 0)
+        for i, j in window:
+            dt = dist(x[i-1], y[j-1])
+            D[i, j] = min((D[i-1, j][0]+dt, i-1, j), (D[i, j-1][0]+dt, i, j-1),
+                        (D[i-1, j-1][0]+dt, i-1, j-1), key=lambda a: a[0])
+        path = []
+        i, j = len_x, len_y
+        while not (i == j == 0):
+            path.append((i-1, j-1))
+            i, j = D[i, j][1], D[i, j][2]
+        path.reverse()
+        return (D[len_x, len_y][0], path)
+
+
+    def __reduce_by_half(self, x):
+        return [(x[i] + x[1+i]) / 2 for i in range(0, len(x) - len(x) % 2, 2)]
+
+
+    def __expand_window(self, path, len_x, len_y, radius):
+        path_ = set(path)
+        for i, j in path:
+            for a, b in ((i + a, j + b)
+                        for a in range(-radius, radius+1)
+                        for b in range(-radius, radius+1)):
+                path_.add((a, b))
+
+        window_ = set()
+        for i, j in path_:
+            for a, b in ((i * 2, j * 2), (i * 2, j * 2 + 1),
+                        (i * 2 + 1, j * 2), (i * 2 + 1, j * 2 + 1)):
+                window_.add((a, b))
+
+        window = []
+        start_j = 0
+        for i in range(0, len_x):
+            new_start_j = None
+            for j in range(start_j, len_y):
+                if (i, j) in window_:
+                    window.append((i, j))
+                    if new_start_j is None:
+                        new_start_j = j
+                elif new_start_j is not None:
+                    break
+            start_j = new_start_j
+
+        return window
