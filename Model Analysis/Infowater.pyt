@@ -42,7 +42,70 @@ class Toolbox(object):
         self.alias = ""
 
         # List of tool classes associated with this toolbox
-        self.tools = [AnalyzeModelReport, ConvertModelReport, ModelComparison]
+        self.tools = [CreateComparisonTemplate, AnalyzeModelReport, ConvertModelReport, ModelComparison, ModelDTW]
+
+
+class CreateComparisonTemplate(object):
+    """This tool generates the default comparison excel file required for the other tools.
+
+    All the columns should match what the other tools expect to see.
+
+    You'll need to fill this file in and use it on other steps afterwards
+    """
+    def __init__(self):
+        """Define the tool (tool name is the name of the class)."""
+        self.label = "Create Comparison Template"
+        self.description = "Create a comparison template file for comparison tools"
+        self.canRunInBackground = False
+
+    def getParameterInfo(self):
+        """Define parameter definitions"""
+        output_param = arcpy.Parameter(
+            displayName="Output Folder",
+            name="out_folder",
+            datatype="DEWorkspace",
+            parameterType="Required",
+            direction="Input"
+        )
+        output_param.filter.list = ['File System']
+        
+        return [output_param]
+
+    def isLicensed(self):
+        """Set whether tool is licensed to execute."""
+        return True
+
+    def updateParameters(self, parameters):
+        """Modify the values and properties of parameters before internal
+        validation is performed.  This method is called whenever a parameter
+        has been changed."""
+        return
+
+    def updateMessages(self, parameters):
+        """Modify the messages created by internal validation for each tool
+        parameter.  This method is called after internal validation."""
+        return
+
+    def execute(self, parameters, messages):
+        """The source code of the tool."""
+        output_folder = parameters[0].valueAsText
+        
+        _columns = [
+            'Pressure_Zone',
+            'Site',
+            'Type',
+            'Old_Id',
+            'New_Id',
+            'Info',
+            'SCADA_TAG'
+        ]
+
+        _df = pd.DataFrame(columns=_columns)
+
+        with pd.ExcelWriter(os.path.join(output_folder, 'Comparison_Template.xlsx')) as writer:
+            _df.to_excel(writer, sheet_name='Model_Comparison', index=False)
+
+        return
 
 
 class AnalyzeModelReport(object):
@@ -713,16 +776,32 @@ class ConvertModelReport(object):
         return        
 
 
-#---------------------------------
-
 class ModelComparison(object):
     """
-    Easiest way to think of the tool is a bit of a triangle. 
-    Tool loops each pressure zone > site > junctions/tank/pipes/poi > plotting functions
+    this tool allows you to compare two model scenarios to one another.
+    Functions by looping through each pressure zone, then each site within the pressure zone to generate comparison graphs.
 
-    a stepped approach to reduce down to the most general at the lowest level and more specific as you move up 
+    Essentially what this is trying to solve is the comparison of two modelled scenarios. 
+    Normally its very time consuming to export many nodes after each run and graph. 
+    This takes the export of the model, using the EXT_APP_FILTER selection, and generates comparisons between the inputs.
 
+    Input models can be two scenarios of the same model or scenarios of different models. 
+    
+    Key component is a comparison excel file that holds the pairings of IDs between models and which pressure zone they are located in.
 
+    Tool first gets all the pressure zones, then for each zone generates a pdf and plots containing the data within that zone.
+
+    Each site is evalulated to see what objects are contained in the data to try and only create plots that are appropriate.
+    For example, if there is only a pipe for that site, then the graph will be a since plot for the page showing the pipes only.
+    If there is a junction and a pipe, it will be two graphs on a page
+    If there is a junction, pipe and tank, it will have three graphs, with the tank spanning the bottom portion of the page.
+
+    Supports adding SCADA data for comparison. SCADA data is represented as a box plot for all available data. 
+    This should show the expected distribution of the flow data in the input file.
+    The comparison sheet should have the column name (likely tag) of the associated scada point.
+
+    Finally, if you would like to review the data, the results are saved to an excel file by default.
+    This gives the freedom to evalulate the data points afterwards and to keep a record of the background data between runs.
     """
     def __init__(self):
         """Init a bunch of items
@@ -884,7 +963,7 @@ class ModelComparison(object):
         param9.values = "Median"
         param9.filter.list = ["Mean", "Median"]
 
-        param10.values = False
+        param10.values = True
 
         params = [
             param0, param1, param2, param3, param4, 
@@ -947,7 +1026,7 @@ class ModelComparison(object):
         _avg_function = parameters[9].valueAsText
         self.averaging_function = avg_dict.get(_avg_function, np.mean)
 
-        _excel = True if parameters[10].valueAsText.upper() == "TRUE" else None
+        _excel = False if parameters[10].valueAsText.upper() == "FALSE" else None
 
         # [arcpy.AddMessage(str(i)) for i in [
         #     _new_model, _old_model, _comp_sheet, _scada, 
@@ -982,7 +1061,7 @@ class ModelComparison(object):
             new_model_label ([string, optional): Optional name for the new model to show on plots. Defaults to None.
             old_model_label (string, optional): Optional name for the new model to show on plots. Defaults to None.
             pdf_prefix (string, optional): Optional prefix to apply to the output pdfs. Defaults to None.
-            export_excel (bool, optional): Optional choice to export to excel. setting True will export
+            export_excel (bool, optional): Optional choice to export to excel. Default to True. setting False will not export
         """
         _start_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
         arcpy.AddMessage(_start_time)
@@ -992,7 +1071,7 @@ class ModelComparison(object):
         self.new_model_label = "New Model" if new_model_label is None else new_model_label
         self.old_model_label = "Old Model" if old_model_label is None else old_model_label
 
-        _export_excel = export_excel if export_excel is True else False
+        _export_excel = export_excel if export_excel is False else True
         
         arcpy.env.overwriteOutput=True
         _new_scenario_data = self.load_model_data(new_model)
@@ -1654,12 +1733,245 @@ class ModelComparison(object):
                     _model_df = _df_list[feat]
                     _model_df.set_index("OID").to_excel(writer, sheet_name=f"{_name} - {feat}", index=False)
 
-    # endregion
+
+class ModelDTW(object):
+    def __init__(self):
+        """Define the tool (tool name is the name of the class)."""
+        self.label = "Model - Dynamic Time Warp"
+        self.description = "Run a dynamic time warp on the input comparison"
+        self.canRunInBackground = False
+
+        self.new_scenario_data = None
+        self.old_scenario_data = None
+        self.comparison_table = None
+        self.sc = None
+
+        self.feat_dict = {
+            'Junction': {'feat': 'junctions', 'y_field': "HEAD"},
+            'Pipe': {'feat': 'pipes', 'y_field': "FLOW"},
+            'Tank': {'feat': 'tanks', 'y_field': "F__VOLUME"}
+        }
+
+    def getParameterInfo(self):
+        """Define parameter definitions"""
+        param0 = arcpy.Parameter(
+            displayName="Old Model Scenario",
+            name="old_model_scenario",
+            datatype="DEWorkspace",
+            parameterType="Required",
+            direction="Input",
+        )
+        
+        param1 = arcpy.Parameter(
+            displayName="New Model Scenario",
+            name="new_model_scenario",
+            datatype="DEWorkspace",
+            parameterType="Required",
+            direction="Input",
+        )
+
+        param2 = arcpy.Parameter(
+            displayName="Comparison Sheet",
+            name="comparison_sheet",
+            datatype="DEFile",
+            parameterType="Required",
+            direction="Input"
+        )
+        param3 = arcpy.Parameter(
+            displayName="Output Folder",
+            name="out_folder",
+            datatype="DEWorkspace",
+            parameterType="Required",
+            direction="Input"
+        )
+
+        param8 = arcpy.Parameter(
+            displayName="File Prefix",
+            name='file_prefix',
+            datatype="GPString",
+            parameterType='Optional',
+            direction='Input'
+        )
+
+        dtw_dist_param = arcpy.Parameter(
+            displayName="DTW Distance",
+            name="dtw_distance",
+            datatype="GPDouble",
+            parameterType='Optional',
+            direction='Input'
+        )
+
+        param0.filter.list = ['File System']
+        param1.filter.list = ['File System']
+        param2.filter.list = ['xls', 'xlsx']
+        param3.filter.list = ['File System']
+
+        params = [
+            param0, param1, param2, param3, param8, 
+            dtw_dist_param]
+        return params
+
+    def isLicensed(self):
+        """Set whether tool is licensed to execute."""
+        return True
+
+    def updateParameters(self, parameters):
+        """Modify the values and properties of parameters before internal
+        validation is performed.  This method is called whenever a parameter
+        has been changed."""
+        return
+
+    def updateMessages(self, parameters):
+        """Modify the messages created by internal validation for each tool
+        parameter.  This method is called after internal validation."""
+        return
+
+    def execute(self, parameters, messages):
+        """The source code of the tool."""
+        _old_model = parameters[0].valueAsText
+        _new_model = parameters[1].valueAsText
+        _comp_sheet = parameters[2].valueAsText
+        _output_folder = parameters[3].valueAsText        
+
+        _file_prefix = parameters[4].valueAsText
+        _file_prefix = _file_prefix if _file_prefix != '' else None
+
+        _dtw_dist = parameters[5].valueAsText
+        _dtw_dist = float(_dtw_dist) if _dtw_dist is not None else None
+
+        self.do_work(
+            new_model=_new_model, 
+            old_model=_old_model, 
+            comparison_sheet=_comp_sheet, 
+            output_folder=_output_folder, 
+            file_prefix=_file_prefix, 
+            dtw_distance=_dtw_dist)
+        return
+
+    def do_work(self, new_model, old_model, comparison_sheet, output_folder, file_prefix=None, dtw_distance=None):
+        _start_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        arcpy.AddMessage(_start_time)
+
+        self.file_prefix = "" if file_prefix is None else file_prefix
+        
+        arcpy.env.overwriteOutput=True
+        _new_scenario_data = self.load_model_data(new_model)
+        _old_scenario_data = self.load_model_data(old_model)
+        _comparison_table = self.load_comparison_file(comparison_sheet)
+
+        self.new_scenario_data = _new_scenario_data
+        self.old_scenario_data = _old_scenario_data
+        self.comparison_table = _comparison_table
+
+        if not os.path.isdir(output_folder):
+            os.makedirs(output_folder)
+        
+        dtw_args = [FastDTW(), self.old_scenario_data, self.new_scenario_data, "Old_Id", "New_Id", dtw_distance]
+        dtw_df = self.comparison_table.apply(
+            self.run_dtw, axis=1, args=dtw_args)
+
+        dtw_df = dtw_df[["Pressure_Zone", "Site", "Old_Id", "New_Id", "DTW"]]
+
+        self.export_results_to_excel(dtw_df, output_folder, "{}DTW_Results.xlsx".format(self.file_prefix))
+        
+        arcpy.AddMessage("Done")
+
+    def load_comparison_file(self, file_path):
+        """Loads the comparison file to a dataframe
+
+        Args:
+            file_path (string): path to the comparison excel file
+
+        Returns:
+            DataFrame: data frame of the comparison file
+        """
+        return pd.read_excel(file_path)
+
+    def load_dbf(self, scenario_path, dbf_name):
+        """Load the model data dbf file and converts to DataFrame
+        This is the junction, pipes, valve, tanks, etc
+        
+        Args:
+            scenario_path (string): path to the scenario folder. 
+            dbf_name (string): Name of the dbf file
+
+        Returns:
+            DataFrame: Data frame of the feature
+        """
+        try:
+            # updated logic for arcigs pro. doesnt required simpledbf package this way
+            _in_table = os.path.join(scenario_path, dbf_name)
+            _out_table = dbf_name
+            _out_table = _out_table.replace(".dbf", "")
+
+            mem_table = arcpy.conversion.TableToTable(_in_table, "in_memory", f"{_out_table}_table")[0]
+            df = pd.DataFrame.spatial.from_table(mem_table)
+            return df
+        except Exception as e:
+            arcpy.AddError(e)
+            return None
+
+    def load_model_data(self, scenario):
+        """Loads the model components from the scenario folder
+
+        Args:
+            scenario (string): path of the scenario
+
+        Returns:
+            dict(string: DataFrame, string: DataFrame, string: DataFrame): dictionary of the junctions, pipes and tanks from the model data
+        """
+        jct_data = self.load_dbf(scenario, "JunctOut.dbf")
+        ppe_data = self.load_dbf(scenario, "PipeOut.dbf")
+        tank_data = self.load_dbf(scenario, "TankOut.dbf")
+        return {"junctions": jct_data, "pipes": ppe_data, "tanks": tank_data}
+
+    def export_results_to_excel(self, _df, _folder, _file):
+        arcpy.AddMessage("Saving DTW results to {}".format(os.path.join(_folder, _file)))
+        with pd.ExcelWriter(os.path.join(_folder, _file)) as writer:
+            _df.to_excel(writer, sheet_name='DTW Results', index=False)
+    
+    def run_dtw(self, _row, _dtw_obj, _scenario_1, _scenario_2, _id_field_1, _id_field_2, _dtw_dist):
+        """Calculate Dynamic Time Weighting on a pandas series
+
+        runs dtw against two 1d arrays and returns the updated row with the DTW column
+
+        creates a default of None for the output distance. If the dtw fails, then the field will have none as a result
+
+        Args:
+            _row (pd.Series): pandas series containing the comparison rows
+            _dtw_obj (FastDTW): DTW class object
+            _scenario_1 (pd.DataFrame): data frame of the first scenario "old"
+            _scenario_2 (pd.DataFrame): data frame of the second scenario "new"
+            _id_field_1 (string): name of first scenario column to reference in _row
+            _id_field_2 (string): name of second scenario column to reference in _row
+            _dtw_dist (float): distance to apply to dtw function
+
+        Returns:
+            pd.Series: updated series object that contains a new DTW column
+        """
+        _dist = None
+        try:
+            _old, _new = _row[_id_field_1], _row[_id_field_2]
+            _feature_items = self.feat_dict.get(_row['Type'])    
+            if _feature_items is None:
+                raise "Unknown Feature"
+
+            _feature = _feature_items.get('feat')
+
+            _old_data = _scenario_1[_feature]
+            _new_data = _scenario_2[_feature]
+
+            _old_val = _old_data.loc[_old_data.ID==_old][_feature_items['y_field']]
+            _new_val = _new_data.loc[_new_data.ID==_new][_feature_items['y_field']]
+
+            _dist, _path = _dtw_obj.dtw(_new_val, _old_val, _dtw_dist)
+            _dist = _dist.round(3)            
+        finally:
+            _row["DTW"] = _dist    
+
+        return _row
 
 
-
-
-# ------------
 class FastDTW(object):
     """This is the fastdtw from the pip library fastdtw
     Only change was adding the self class values to everything
@@ -1711,14 +2023,11 @@ class FastDTW(object):
         x, y, dist = self.__prep_inputs(x, y, dist)
         return self.__fastdtw(x, y, radius, dist)
 
-
     def __difference(self, a, b):
         return abs(a - b)
 
-
     def __norm(self, p):
         return lambda a, b: np.linalg.norm(np.atleast_1d(a) - np.atleast_1d(b), p)
-
 
     def __fastdtw(self, x, y, radius, dist):
         min_time_size = radius + 2
@@ -1732,7 +2041,6 @@ class FastDTW(object):
             self.__fastdtw(x_shrinked, y_shrinked, radius=radius, dist=dist)
         window = self.__expand_window(path, len(x), len(y), radius)
         return self.__dtw(x, y, window, dist=dist)
-
 
     def __prep_inputs(self, x, y, dist):
         x = np.asanyarray(x, dtype='float')
@@ -1752,7 +2060,6 @@ class FastDTW(object):
             dist = self.__norm(p=dist)
 
         return x, y, dist
-
 
     def dtw(self, x, y, dist=None):
         ''' return the distance between 2 time series without approximation
@@ -1785,7 +2092,6 @@ class FastDTW(object):
         x, y, dist = self.__prep_inputs(x, y, dist)
         return self.__dtw(x, y, None, dist)
 
-
     def __dtw(self, x, y, window, dist):
         len_x, len_y = len(x), len(y)
         if window is None:
@@ -1805,10 +2111,8 @@ class FastDTW(object):
         path.reverse()
         return (D[len_x, len_y][0], path)
 
-
     def __reduce_by_half(self, x):
         return [(x[i] + x[1+i]) / 2 for i in range(0, len(x) - len(x) % 2, 2)]
-
 
     def __expand_window(self, path, len_x, len_y, radius):
         path_ = set(path)
