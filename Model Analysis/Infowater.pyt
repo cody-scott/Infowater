@@ -644,7 +644,6 @@ class AnalyzeModelReport(object):
         return out_df.drop("ID", axis=1)
 
 
-
 class ConvertModelReport(object):
     def __init__(self):
         """Define the tool (tool name is the name of the class)."""
@@ -786,7 +785,6 @@ class ModelComparison(object):
             np.mean: "Mean"
         }
        
-
     def getParameterInfo(self):
         """Define parameter definitions"""
         param0 = arcpy.Parameter(
@@ -868,6 +866,14 @@ class ModelComparison(object):
             direction='Input'
         )
 
+        param10 = arcpy.Parameter(
+            displayName = "Save data to Excel",
+            name="save_excel",
+            datatype="GPBoolean",
+            parameterType="Required",
+            direction="Input"
+        )
+
         param0.filter.list = ['File System']
         param1.filter.list = ['File System']
         param2.filter.list = ['xls', 'xlsx']
@@ -878,7 +884,12 @@ class ModelComparison(object):
         param9.values = "Median"
         param9.filter.list = ["Mean", "Median"]
 
-        params = [param0, param1, param2, param3, param4, param5, param6, param7, param8, param9]
+        param10.values = False
+
+        params = [
+            param0, param1, param2, param3, param4, 
+            param5, param6, param7, param8, param9, 
+            param10]
         return params
 
     def isLicensed(self):
@@ -910,6 +921,7 @@ class ModelComparison(object):
         """
 
         # [arcpy.AddMessage(str(i.valueAsText)) for i in parameters]
+        # return
 
         _old_model = parameters[0].valueAsText
         _new_model = parameters[1].valueAsText
@@ -935,10 +947,29 @@ class ModelComparison(object):
         _avg_function = parameters[9].valueAsText
         self.averaging_function = avg_dict.get(_avg_function, np.mean)
 
-        self.do_work(_new_model, _old_model, _comp_sheet, _scada, _zone, _pdf_f, _new_lbl, _old_lbl, _pdf_prefix)
+        _excel = True if parameters[10].valueAsText.upper() == "TRUE" else None
+
+        # [arcpy.AddMessage(str(i)) for i in [
+        #     _new_model, _old_model, _comp_sheet, _scada, 
+        #     _zone, _pdf_f, _new_lbl, _old_lbl, _pdf_prefix, 
+        #     _excel
+        # ]]
+        # return
+
+        self.do_work(
+            new_model=_new_model, 
+            old_model=_old_model, 
+            comparison_sheet=_comp_sheet, 
+            scada=_scada, 
+            zone=_zone, 
+            pdf_folder=_pdf_f, 
+            new_model_label=_new_lbl, 
+            old_model_label=_old_lbl, 
+            pdf_prefix=_pdf_prefix, 
+            export_excel=_excel)
         return
 
-    def do_work(self, new_model, old_model, comparison_sheet, scada, zone, pdf_folder, new_model_label=None, old_model_label=None, pdf_prefix=None):
+    def do_work(self, new_model, old_model, comparison_sheet, scada, zone, pdf_folder, new_model_label=None, old_model_label=None, pdf_prefix=None, export_excel=None):
         """Main function loop to process the data. Tool with generate unique pdfs per zone supplied in the comparison sheet
 
         Args:
@@ -951,6 +982,7 @@ class ModelComparison(object):
             new_model_label ([string, optional): Optional name for the new model to show on plots. Defaults to None.
             old_model_label (string, optional): Optional name for the new model to show on plots. Defaults to None.
             pdf_prefix (string, optional): Optional prefix to apply to the output pdfs. Defaults to None.
+            export_excel (bool, optional): Optional choice to export to excel. setting True will export
         """
         _start_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
         arcpy.AddMessage(_start_time)
@@ -959,6 +991,8 @@ class ModelComparison(object):
 
         self.new_model_label = "New Model" if new_model_label is None else new_model_label
         self.old_model_label = "Old Model" if old_model_label is None else old_model_label
+
+        _export_excel = export_excel if export_excel is True else False
         
         arcpy.env.overwriteOutput=True
         _new_scenario_data = self.load_model_data(new_model)
@@ -989,8 +1023,67 @@ class ModelComparison(object):
             arcpy.SetProgressorLabel("Zone - {}".format(zone))
             with PdfPages(os.path.join(pdf_folder, '{}{}.pdf'.format(pdf_prefix, zone))) as pp:
                 self.zone_base(self.comparison_table.loc[self.comparison_table["Pressure_Zone"] == zone], pp)
+
+        if _export_excel:
+            self.export_results_to_excel(pdf_folder, "{}ModelResults.xlsx".format(pdf_prefix))
+        
         arcpy.AddMessage("Done")
 
+    def zone_base(self, zone_data, pdf_f=None):
+        """Base function to loop the zones to plot
+
+        Higher function is passing a data frame of the comparison data that is reduced to a single Zone.
+
+        this then gets the group of sites within that data frame, based on the site column, then loops and plots each site
+
+        Args:
+            zone_data (DataFrame): comparison data data frame
+            pdf_f (PDFPage, optional): Target PDF document. Defaults to None.
+        """
+        poi_data = zone_data.loc[(zone_data["Site"] == "POI")]
+        data = zone_data.loc[~(zone_data["Site"] == "POI")]
+        _sites = sorted(data["Site"].unique())
+        for i_enum, site in enumerate(_sites):
+            arcpy.AddMessage(f"Site {i_enum+1} of {len(_sites)}\t{site}")
+            self.site_base(data.loc[data["Site"] == site], pdf_f)
+
+        arcpy.AddMessage("Plotting Points of Interest for zone")
+        self.POI_chart(poi_data, pdf_f)
+
+    def site_base(self, site_data, pdf_f=None):
+        """Loop for plotting each site within the pressure zone
+        This loops each item for that site and plots.
+
+        Checks to see if the site has junctions, pipes, tanks and determines which plotting function to pass along to
+
+        Args:
+            site_data (DataFrame): comparison data frame of site data 
+            pdf_f (PDFPage, optional): target PDF document to plot to. Defaults to None.
+        """
+        site_name = list(site_data["Site"])[0]
+        site_junction = site_data.loc[site_data["Type"] == "Junction"]
+        site_pipe = site_data.loc[site_data["Type"] == "Pipe"]
+        site_tank = site_data.loc[site_data["Type"] == "Tank"]
+
+        # arcpy.AddMessage(f"Site: {site_name}")
+
+        # check for a tank
+        if site_tank.count().max() > 0:
+            if any([site_junction.count().max(), site_pipe.count().max()]) > 0:
+                self.station_with_tank_graph(site_junction, site_pipe, site_tank,
+                                        site_name, pdf_f=pdf_f)
+            else:
+                self.station_tank_graph(site_tank, site_name, pdf_f=pdf_f)
+        else:
+            # no tank, plot without.
+            if (site_junction.count().max() > 0) and (site_pipe.count().max() == 0):
+                self.station_junction_only(site_junction, site_name, pdf_f=pdf_f)
+            elif (site_junction.count().max() == 0) and (site_pipe.count().max() > 0):
+                self.station_pipe_only(site_pipe, site_name, pdf_f=pdf_f)
+            else:
+                self.station_without_tank_graph(site_junction, site_pipe, site_name,
+                                           pdf_f=pdf_f)
+    
     def load_comparison_file(self, file_path):
         """Loads the comparison file to a dataframe
 
@@ -1070,8 +1163,6 @@ class ModelComparison(object):
         ppe_data = self.load_dbf(scenario, "PipeOut.dbf")
         tank_data = self.load_dbf(scenario, "TankOut.dbf")
         return {"junctions": jct_data, "pipes": ppe_data, "tanks": tank_data}
-
-    # region Fill with JP
 
     def POI_chart(self, poi_data, pdf_f=None):
         """Function for generating chunks to pass to poi charting function
@@ -1541,60 +1632,28 @@ class ModelComparison(object):
         return ax.axhline(linewidth=2, color=color, y=nd, alpha=0.5, linestyle='dashed',
                    label="{} - {}".format(label, _lbl))
 
-    def zone_base(self, zone_data, pdf_f=None):
-        """Base function to loop the zones to plot
+    def export_results_to_excel(self, _folder, _file):
+        """export all loaded model results to an excel file
 
-        Higher function is passing a data frame of the comparison data that is reduced to a single Zone.
+        Handy if you're wanting to review the results afterwards for what was generated.
+        Validation purposes, modelling requests, etc.
 
-        this then gets the group of sites within that data frame, based on the site column, then loops and plots each site
+        will generate tabs for the input features appended with model prefix for each
 
-        Args:
-            zone_data (DataFrame): comparison data data frame
-            pdf_f (PDFPage, optional): Target PDF document. Defaults to None.
-        """
-        poi_data = zone_data.loc[(zone_data["Site"] == "POI")]
-        data = zone_data.loc[~(zone_data["Site"] == "POI")]
-        _sites = sorted(data["Site"].unique())
-        for i_enum, site in enumerate(_sites):
-            arcpy.AddMessage(f"Site {i_enum+1} of {len(_sites)}\t{site}")
-            self.site_base(data.loc[data["Site"] == site], pdf_f)
-
-        arcpy.AddMessage("Plotting Points of Interest for zone")
-        self.POI_chart(poi_data, pdf_f)
-
-    def site_base(self, site_data, pdf_f=None):
-        """Loop for plotting each site within the pressure zone
-        This loops each item for that site and plots.
-
-        Checks to see if the site has junctions, pipes, tanks and determines which plotting function to pass along to
+        To make use of it in excel, consider using pivot tables as this is exporting all attributes for that feature.
 
         Args:
-            site_data (DataFrame): comparison data frame of site data 
-            pdf_f (PDFPage, optional): target PDF document to plot to. Defaults to None.
+            _folder (string): Folder path to save excel file
+            _file (string): name of file to save
         """
-        site_name = list(site_data["Site"])[0]
-        site_junction = site_data.loc[site_data["Type"] == "Junction"]
-        site_pipe = site_data.loc[site_data["Type"] == "Pipe"]
-        site_tank = site_data.loc[site_data["Type"] == "Tank"]
+        print("Saving model results to {}".format(os.path.join(_folder, _file)))
 
-        # arcpy.AddMessage(f"Site: {site_name}")
+        with pd.ExcelWriter(os.path.join(_folder, _file)) as writer:
+            for _name, _df_list in zip([self.new_model_label, self.old_model_label], [self.new_scenario_data, self.old_scenario_data]):
+                for feat in _df_list:
+                    _model_df = _df_list[feat]
+                    _model_df.set_index("OID").to_excel(writer, sheet_name=f"{_name} - {feat}", index=False)
 
-        # check for a tank
-        if site_tank.count().max() > 0:
-            if any([site_junction.count().max(), site_pipe.count().max()]) > 0:
-                self.station_with_tank_graph(site_junction, site_pipe, site_tank,
-                                        site_name, pdf_f=pdf_f)
-            else:
-                self.station_tank_graph(site_tank, site_name, pdf_f=pdf_f)
-        else:
-            # no tank, plot without.
-            if (site_junction.count().max() > 0) and (site_pipe.count().max() == 0):
-                self.station_junction_only(site_junction, site_name, pdf_f=pdf_f)
-            elif (site_junction.count().max() == 0) and (site_pipe.count().max() > 0):
-                self.station_pipe_only(site_pipe, site_name, pdf_f=pdf_f)
-            else:
-                self.station_without_tank_graph(site_junction, site_pipe, site_name,
-                                           pdf_f=pdf_f)
     # endregion
 
 
@@ -1610,7 +1669,7 @@ class FastDTW(object):
     https://en.wikipedia.org/wiki/Dynamic_time_warping
 
     I've put it in here directly since i don't want to install extra libs
-    Should really need to update this either. 
+    Shouldnt really need to update this either. 
     """
     def __init__(self):
         pass
