@@ -1,9 +1,15 @@
 import warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
-import arcpy
 import sys
 import re
+
+py_3 = True if sys.version_info[0] > 2 else False
+
+if not py_3:
+    import arcview
+
+import arcpy
 
 import pandas as pd
 import numpy as np
@@ -31,8 +37,15 @@ except:
 #model comparison imports
 import matplotlib.pyplot as plt
 import matplotlib
+from matplotlib import cm as _mlp_cm
 from matplotlib.backends.backend_pdf import PdfPages
-from arcgis.features import GeoAccessor, GeoSeriesAccessor
+
+try:
+    # this will only go if in arcgis pro
+    from arcgis.features import GeoAccessor, GeoSeriesAccessor
+except:
+    pass
+
 
 class Toolbox(object):
     def __init__(self):
@@ -218,7 +231,7 @@ class AnalyzeModelReport(object):
 
         time_group = self._generate_time_groups(self.create_search_text(txt))
 
-        arcpy.AddMessage(f"Processing {len(time_group)} time groups")
+        arcpy.AddMessage("Processing {} time groups".format(len(time_group)))
         for gs in time_group:
             
             time_s = self.determine_timestamp(gs)
@@ -246,8 +259,8 @@ class AnalyzeModelReport(object):
             change_df = self._merge_zones(change_df, _zone_data)
 
         arcpy.AddMessage("Exporting Data to excel")
-        arcpy.AddMessage(f"Folder: {output_folder}")
-        arcpy.AddMessage(f'File: {output_name}')
+        arcpy.AddMessage("Folder: {}".format(output_folder))
+        arcpy.AddMessage('File: {}'.format(output_name))
         if op_xl:
             self._export_to_excel_tables(frame_list=[
                 ["Changes", change_df],
@@ -768,8 +781,8 @@ class ConvertModelReport(object):
         base_name = parameters[2].valueAsText
         
         for sht in ["Changes", "Trials", "Warnings", "Balance"]:
-            arcpy.AddMessage(f"Exporting Sheet: {sht}")
-            tbl_name = f"{base_name}_{sht}"
+            arcpy.AddMessage("Exporting Sheet: {}".format(sht))
+            tbl_name = "{}_{}".format(base_name, sht)
             tbl_path = os.path.join(out_gdb, tbl_name)
             arcpy.conversion.ExcelToTable(excel_doc, tbl_path, sht)
         
@@ -812,7 +825,7 @@ class ModelComparison(object):
 
         Change the values after you create the class
 
-        set color maps for the plots, including a fallback if a failure (crs/cls)
+
         sets some class globals to none for the new/old/comparison/scada table data
         sets the horizonal/vertical spacing for plots (hs, ws)
         sets the bounding boxes for legend
@@ -828,14 +841,8 @@ class ModelComparison(object):
         self.description = "Generate PDF outputs of two models to compare"
         self.canRunInBackground = False
         
-        try:
-            self.crs = matplotlib.cm.get_cmap('tab10')
-            self.cls = dict(zip(["NewData", "OldData", "SCADA"], [self.crs(x) for x in np.linspace(0, 0.2, 3)]))
-        except:
-            print("exception on colors")
-            self.crs = [(0.267004, 0.004874, 0.329415, 1.0), (0.172719, 0.448791, 0.557885, 1.0), (0.369214, 0.788888, 0.382914, 1.0)]
-            self.cls = dict(zip(["NewData", "OldData", "SCADA"], self.crs))
-            # plt.style.use("bmh")
+        _cmap = 'tab10' if py_3 else 'Set1'
+        self._set_colormap(_cmap)
 
         self.new_scenario_data = None
         self.old_scenario_data = None
@@ -863,7 +870,11 @@ class ModelComparison(object):
             np.median: "Median",
             np.mean: "Mean"
         }
-       
+    
+    def _set_colormap(self, _cmap):
+        self.crs = _mlp_cm.get_cmap(_cmap)
+        self.cls = dict(zip(["NewData", "OldData", "SCADA"], [self.crs(x) for x in np.linspace(0, 0.2, 3)]))
+
     def getParameterInfo(self):
         """Define parameter definitions"""
         param0 = arcpy.Parameter(
@@ -1123,7 +1134,7 @@ class ModelComparison(object):
         data = zone_data.loc[~(zone_data["Site"] == "POI")]
         _sites = sorted(data["Site"].unique())
         for i_enum, site in enumerate(_sites):
-            arcpy.AddMessage(f"Site {i_enum+1} of {len(_sites)}\t{site}")
+            arcpy.AddMessage("Site {} of {}\t{}".format(i_enum+1, len(_sites), site))
             self.site_base(data.loc[data["Site"] == site], pdf_f)
 
         arcpy.AddMessage("Plotting Points of Interest for zone")
@@ -1222,8 +1233,17 @@ class ModelComparison(object):
             _out_table = dbf_name
             _out_table = _out_table.replace(".dbf", "")
 
-            mem_table = arcpy.conversion.TableToTable(_in_table, "in_memory", f"{_out_table}_table")[0]
-            df = pd.DataFrame.spatial.from_table(mem_table)
+            if py_3:
+                mem_table = arcpy.conversion.TableToTable(_in_table, "in_memory", "{}_table".format(_out_table))[0]
+                df = pd.DataFrame.spatial.from_table(mem_table)
+            else:
+                _tmp_tlb = arcpy.TableToTable_conversion(_in_table, "in_memory", "test_table")
+                data = []
+                cols = [f.name for f in arcpy.ListFields(_tmp_tlb)]
+                with arcpy.da.SearchCursor(_tmp_tlb, cols) as sc:
+                    data = [row for row in sc]
+                df = pd.DataFrame(data, columns=cols)
+
             return df
         except Exception as e:
             arcpy.AddError(e)
@@ -1596,7 +1616,7 @@ class ModelComparison(object):
                     self.plot_daily_avg(self.sc[scada_tag], ax, self.cls['SCADA'], "SCADA")
                     
                 except KeyError:
-                    print(f"No data for tag {scada_tag.values[0]}")
+                    print("No data for tag {}".format(scada_tag.values[0]))
                 except:
                     print("SCADA problem with {}".format(data["New_Id"]))
 
@@ -1731,7 +1751,7 @@ class ModelComparison(object):
             for _name, _df_list in zip([self.new_model_label, self.old_model_label], [self.new_scenario_data, self.old_scenario_data]):
                 for feat in _df_list:
                     _model_df = _df_list[feat]
-                    _model_df.set_index("OID").to_excel(writer, sheet_name=f"{_name} - {feat}", index=False)
+                    _model_df.set_index("OID").to_excel(writer, sheet_name="{} - {}".format(_name, feat), index=False)
 
 
 class ModelDTW(object):
@@ -1904,8 +1924,17 @@ class ModelDTW(object):
             _out_table = dbf_name
             _out_table = _out_table.replace(".dbf", "")
 
-            mem_table = arcpy.conversion.TableToTable(_in_table, "in_memory", f"{_out_table}_table")[0]
-            df = pd.DataFrame.spatial.from_table(mem_table)
+            if py_3:
+                mem_table = arcpy.conversion.TableToTable(_in_table, "in_memory", "{}_table".format(_out_table))[0]
+                df = pd.DataFrame.spatial.from_table(mem_table)
+            else:
+                _tmp_tlb = arcpy.TableToTable_conversion(_in_table, "in_memory", "test_table")
+                data = []
+                cols = [f.name for f in arcpy.ListFields(_tmp_tlb)]
+                with arcpy.da.SearchCursor(_tmp_tlb, cols) as sc:
+                    data = [row for row in sc]
+                df = pd.DataFrame(data, columns=cols)
+
             return df
         except Exception as e:
             arcpy.AddError(e)
