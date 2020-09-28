@@ -1271,7 +1271,7 @@ class ModelComparison(object):
                 mem_table = arcpy.conversion.TableToTable(_in_table, "in_memory", "{}_table".format(_out_table))[0]
                 df = pd.DataFrame.spatial.from_table(mem_table)
             else:
-                _tmp_tlb = arcpy.TableToTable_conversion(_in_table, "in_memory", "test_table")
+                _tmp_tlb = arcpy.TableToTable_conversion(_in_table, "in_memory", "{}_table".format(_out_table))[0]
                 data = []
                 cols = [f.name for f in arcpy.ListFields(_tmp_tlb)]
                 with arcpy.da.SearchCursor(_tmp_tlb, cols) as sc:
