@@ -102,8 +102,13 @@ class CreateComparisonTemplate(object):
     def execute(self, parameters, messages):
         """The source code of the tool."""
         output_folder = parameters[0].valueAsText
-        
-        _columns = [
+        self.generate_comparison(output_folder)
+        self.generate_scada(output_folder)
+
+        return
+
+    def generate_comparison(self, output_folder):
+        comparison_columns = [
             'Pressure_Zone',
             'Site',
             'Type',
@@ -113,13 +118,42 @@ class CreateComparisonTemplate(object):
             'SCADA_TAG'
         ]
 
-        _df = pd.DataFrame(columns=_columns)
+        _df_data = [[
+            "Sample Zone",
+            "Site A",
+            "Junction",
+            "JCT_1",
+            "JCT_20",
+            "Example Junction",
+            "SampleTagJunction"
+        ], [
+            "Sample Zone",
+            "Site A",
+            "Pipe",
+            "PPE_1",
+            "PPE_20",
+            "Example Pipe",
+            "SampleTagPipe"
+        ]]
+
+        _df = pd.DataFrame(_df_data, columns=comparison_columns)
 
         with pd.ExcelWriter(os.path.join(output_folder, 'Comparison_Template.xlsx')) as writer:
             _df.to_excel(writer, sheet_name='Model_Comparison', index=False)
 
-        return
+    def generate_scada(self, output_folder):
+        n_dt = datetime.datetime.now()
+        dt = datetime.datetime(year=n_dt.year, month=n_dt.month, day=n_dt.day)
+        
+        time_index = [dt+datetime.timedelta(minutes=i) for i in range(0, 10, 2)]
+        tag_rand_jct = np.random.rand(len(time_index))
+        tag_rand_ppe = np.random.rand(len(time_index))
+        _df_data = np.column_stack((time_index, tag_rand_jct, tag_rand_ppe)) 
 
+        _df = pd.DataFrame(_df_data, columns=["Time", "SampleTagJunction", "SampleTagPipe"])
+
+        with pd.ExcelWriter(os.path.join(output_folder, 'SCADA_Template.xlsx')) as writer:
+            _df.to_excel(writer, sheet_name='SCADA_Data', index=False)
 
 class AnalyzeModelReport(object):
     def __init__(self):
