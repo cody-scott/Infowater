@@ -902,7 +902,7 @@ class ModelComparison(object):
 
         self.averaging_function_lbls = {
             np.median: "Median",
-            np.mean: "Mean"
+            np.mean: "Mean",
         }
     
     def _set_colormap(self, _cmap):
@@ -945,11 +945,12 @@ class ModelComparison(object):
         param4 = arcpy.Parameter(
             displayName="Sub Zone List",
             name="zone_list",
-            datatype="GPString",
+            datatype="GPValueTable",
             parameterType="Optional",
             direction="Input",
             multiValue=True
         )
+        param4.columns =([["GPString", "Zones"]])
         param5 = arcpy.Parameter(
             displayName="SCADA Data",
             name="scada_data",
@@ -1006,7 +1007,7 @@ class ModelComparison(object):
 
         param9.filter.type = "ValueList"
         param9.values = "Median"
-        param9.filter.list = ["Mean", "Median"]
+        param9.filter.list = ["Mean", "Median", "None"]
 
         param10.values = True
 
@@ -1065,7 +1066,8 @@ class ModelComparison(object):
 
         avg_dict = {
             'Mean': np.mean,
-            'Median': np.median
+            'Median': np.median,
+            'None': None
         }
 
         _avg_function = parameters[9].valueAsText
@@ -1758,6 +1760,8 @@ class ModelComparison(object):
             [type]: [description]
         """
         _func = self.averaging_function
+        if _func is None: return
+        
         _lbl = self.averaging_function_lbls.get(_func, "Other")
         nd = _func(data)
         if type(nd) is pd.Series:
