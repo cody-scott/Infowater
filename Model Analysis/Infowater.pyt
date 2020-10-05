@@ -2057,8 +2057,7 @@ class ModelDTW(object):
         try:
             _old, _new = _row[_id_field_1], _row[_id_field_2]
             _feature_items = self.feat_dict.get(_row['Type'])    
-            if _feature_items is None:
-                raise "Unknown Feature"
+            assert _feature_items is not None
 
             _feature = _feature_items.get('feat')
 
@@ -2067,9 +2066,13 @@ class ModelDTW(object):
 
             _old_val = _old_data.loc[_old_data.ID==_old][_feature_items['y_field']]
             _new_val = _new_data.loc[_new_data.ID==_new][_feature_items['y_field']]
-
+            
+            assert (_old_val.shape == _new_val.shape) and (_old_val.shape[0]>0)
+            
             _dist, _path = _dtw_obj.dtw(_new_val, _old_val, _dtw_dist)
-            _dist = _dist.round(3)            
+            _dist = _dist.round(3)       
+        except AssertionError:
+            pass     
         finally:
             _row["DTW"] = _dist    
 
