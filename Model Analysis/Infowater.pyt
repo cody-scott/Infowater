@@ -1062,7 +1062,7 @@ class ModelComparison(object):
         _old_lbl = _old_lbl if _old_lbl != '' else None
 
         _pdf_prefix = parameters[8].valueAsText
-        _pdf_prefix = _pdf_prefix if _pdf_prefix != '' else None
+        _pdf_prefix = _pdf_prefix if _pdf_prefix != '' else ''
 
         avg_dict = {
             'Mean': np.mean,
@@ -1130,7 +1130,10 @@ class ModelComparison(object):
 
         # zs = zones
         if zone is not None:
-            zs = [i.replace("'", "") for i in zone.split(";")]
+            if type(zone) is list:
+                zs = zone
+            else:
+                zs = [i.replace("'", "") for i in zone.split(";")]
 
         self.new_scenario_data = _new_scenario_data
         self.old_scenario_data = _old_scenario_data
@@ -1147,11 +1150,11 @@ class ModelComparison(object):
             arcpy.AddMessage("Zone - {}".format(zone))
             arcpy.SetProgressorPosition(i_iteration)
             arcpy.SetProgressorLabel("Zone - {}".format(zone))
-            with PdfPages(os.path.join(pdf_folder, '{}{}.pdf'.format(pdf_prefix, zone))) as pp:
+            with PdfPages(os.path.join(pdf_folder, '{}{}.pdf'.format(self.pdf_prefix, zone))) as pp:
                 self.zone_base(self.comparison_table.loc[self.comparison_table["Pressure_Zone"] == zone], pp)
 
         if _export_excel:
-            self.export_results_to_excel(pdf_folder, "{}ModelResults.xlsx".format(pdf_prefix))
+            self.export_results_to_excel(pdf_folder, "{}ModelResults.xlsx".format(self.pdf_prefix))
         
         arcpy.AddMessage("Done")
 
@@ -1582,7 +1585,9 @@ class ModelComparison(object):
         self.plot_generic(pipe, ax, 'pipes', y_field)
 
         # test if all negative
-        self._validate_sign(ax)
+        if not self._validate_sign(ax):
+            _s = self.get_warning_message_content(pipe)
+            arcpy.AddWarning("{} - Data may be reversed. Check model pipe directions to correct sign".format(_s))
 
         # ax.legend()
         ax.grid()
@@ -1635,6 +1640,12 @@ class ModelComparison(object):
             s_data = scenario_data[p]
             s_data = s_data.loc[s_data["ID"].isin(data[id_f])].set_index(
                 "TIME_STEP")
+
+            if s_data.empty:
+                _msg_content = self.get_warning_message_content(data)
+                arcpy.AddWarning("{} - No data".format(_msg_content))
+                continue
+            
             ax.plot(s_data[y_field], label=lbl, color=color)
             self.plot_daily_avg(s_data[y_field], ax, color, lbl)
 
@@ -1700,7 +1711,8 @@ class ModelComparison(object):
 
         fig.subplots_adjust(top=0.88)
 
-        c_num = int(max(1, len(by_label.keys())/2))
+        c_num = len(set([v.split(" -")[0] for v in by_label.keys()]))
+        # c_num = int(max(1, len(by_label.keys())/2))
 
         fig.legend(
             by_label.values(), by_label.keys(), 
@@ -1709,8 +1721,7 @@ class ModelComparison(object):
         )
 
     def _validate_sign(self, ax):
-        """
-        checks to see if all the tags in the graph are negative, ignoring scada
+        """checks to see if all the tags in the graph are negative, ignoring scada
         if all values in the series are negative, in both the new and old, flips the sign to be positive
         This really should only apply to pipes, specifically pipes that are drawn "reverse" 
 
@@ -1719,6 +1730,12 @@ class ModelComparison(object):
 
         Either way probably best to just fix it in the model by reversing the pipe to the appropriate direction.
         I have put this as a flag to print out instead, but kept code for reference
+
+        Args:
+            ax (axis): axis to check
+
+        Returns:
+            bool: True if valid, False if invalid, aka different signs
         """
         vals = []
         for l in ax.get_lines():
@@ -1728,8 +1745,9 @@ class ModelComparison(object):
             vals += _v
 
         if not ((min(vals) >= 0) or (max(vals) >= 0)):
-            arcpy.AddMessage("Data may be reversed. Check model pipe directions to correct sign")
-
+            return False
+        else:
+            return True
             # for l in ax.get_lines():
             #     if "SCADA" in l.get_label().upper():
             #         continue
@@ -1750,6 +1768,8 @@ class ModelComparison(object):
 
         Default is mean.
 
+        Applies dropna to the input data to remove any potential nan values. Usually this would just be from the scada data
+
         Args:
             data (DataFrame or Series): data frame of the data to calculate average
             ax (axes): Axes to plot the daily average to
@@ -1759,15 +1779,17 @@ class ModelComparison(object):
         Returns:
             [type]: [description]
         """
+
         _func = self.averaging_function
         if _func is None: return
         
         _lbl = self.averaging_function_lbls.get(_func, "Other")
-        nd = _func(data)
+        nd = _func(data.dropna())
         if type(nd) is pd.Series:
-            nd = _func(data)
+            nd = _func(nd)
         return ax.axhline(linewidth=2, color=color, y=nd, alpha=0.5, linestyle='dashed',
-                   label="{} - {}".format(label, _lbl))
+                label="{} - {}".format(label, _lbl))
+
 
     def export_results_to_excel(self, _folder, _file):
         """export all loaded model results to an excel file
@@ -1790,6 +1812,21 @@ class ModelComparison(object):
                 for feat in _df_list:
                     _model_df = _df_list[feat]
                     _model_df.set_index("OID").to_excel(writer, sheet_name="{} - {}".format(_name, feat), index=False)
+
+
+    def get_warning_message_content(self, _data):
+        """Returns the normal error content for printing warnings
+
+        Specifically gets pressure zone, site and type of feature that errored returned with seperator
+
+        Returns:
+            str: string of error message
+        """
+        _pz = _data["Pressure_Zone"].values[0] if len(_data["Pressure_Zone"].values)>0 else None
+        _sz = _data["Site"].values[0] if len(_data["Site"].values)>0 else None
+        _tp = _data["Type"].values[0] if len(_data["Type"].values)>0 else None
+        _msg_content = " - ".join([_v for _v in [_pz, _sz, _tp] if _v is not None])
+        return _msg_content
 
 
 class ModelDTW(object):
