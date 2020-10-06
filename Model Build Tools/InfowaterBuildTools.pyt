@@ -43,7 +43,7 @@ class Toolbox(object):
         """Define the toolbox (the name of the toolbox is the name of the
         .pyt file)."""
         self.label = "InfowaterBuildTools"
-        self.alias = "Infowater Build Tools"
+        self.alias = "InfowaterBuildTools"
 
         # List of tool classes associated with this toolbox
         self.tools = [

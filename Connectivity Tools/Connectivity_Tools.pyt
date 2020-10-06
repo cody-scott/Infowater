@@ -34,8 +34,8 @@ class Toolbox(object):
     def __init__(self):
         """Define the toolbox (the name of the toolbox is the name of the
         .pyt file)."""
-        self.label = "Toolbox"
-        self.alias = ""
+        self.label = "InfowaterConnectivity"
+        self.alias = "InfowaterConnectivity"
 
         # List of tool classes associated with this toolbox
         self.tools = [NodeCheck, RandomSampleImages]

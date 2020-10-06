@@ -52,7 +52,7 @@ class Toolbox(object):
         """Define the toolbox (the name of the toolbox is the name of the
         .pyt file)."""
         self.label = "Infowater toolbox"
-        self.alias = ""
+        self.alias = "Infowater"
 
         # List of tool classes associated with this toolbox
         self.tools = [CreateComparisonTemplate, AnalyzeModelReport, ConvertModelReport, ModelComparison, ModelDTW]
