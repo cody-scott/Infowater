@@ -30,7 +30,19 @@ Key comparison point is that the data is loaded from the model output, which is 
 
 Based on this selection set and the comparison excel file, the tool will generate a series of graphs for the comparison of the documents.
 
-Finally, you can choose to input SCADA data to display for comparison purposes, as well as the averaging function to apply. 
+You can choose to input SCADA data to display for comparison purposes, as well as the averaging function to apply. 
+
+## Site with Tank
+![tank](images/site_a.jpg "Tank")
+
+## Site without Tank
+![no tank](images/site_b.jpg "No Tank")
+
+Finally, if the site is set to POI, then all points those sites are compared as points of interest. The POI sites are plotted on the last page of the zone with a common shared y axis between each point.
+
+![poi](images/poi.jpg "Point of Interest")
+
+Additional options include exporting input data to a single excel file, mean, median or no average function, sub zone filter.
 
 Read the help/code for further options.
 
@@ -44,4 +56,4 @@ Read about DTW [Wikipedia](https://en.wikipedia.org/wiki/Dynamic_time_warping)
 
 DTW is taken from [FastDTW](https://github.com/slaypni/fastdtw/blob/master/fastdtw/fastdtw.py), primarily to avoid needing to install additional packages.
 
-
+![dtw](images/dtw.JPG "DTW")
