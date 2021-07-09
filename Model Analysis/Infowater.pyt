@@ -43,6 +43,7 @@ from matplotlib.backends.backend_pdf import PdfPages
 try:
     # this will only go if in arcgis pro
     from arcgis.features import GeoAccessor, GeoSeriesAccessor
+    from pathlib import Path
 except:
     pass
 
@@ -55,7 +56,16 @@ class Toolbox(object):
         self.alias = "Infowater"
 
         # List of tool classes associated with this toolbox
-        self.tools = [CreateComparisonTemplate, AnalyzeModelReport, ConvertModelReport, ModelComparison, ModelDTW]
+        self.tools = [
+            CreateComparisonTemplate, 
+            AnalyzeModelReport, 
+            ConvertModelReport, 
+            ModelComparison, 
+            ModelDTW
+        ]
+
+        if py_3:
+            self.tools.append(ProcessModelResults)
 
 
 class CreateComparisonTemplate(object):
@@ -154,6 +164,7 @@ class CreateComparisonTemplate(object):
 
         with pd.ExcelWriter(os.path.join(output_folder, 'SCADA_Template.xlsx')) as writer:
             _df.to_excel(writer, sheet_name='SCADA_Data', index=False)
+
 
 class AnalyzeModelReport(object):
     def __init__(self):
@@ -2249,3 +2260,350 @@ class FastDTW(object):
             start_j = new_start_j
 
         return window
+
+
+class ProcessModelResults(object):
+    """Process a set of model results into a single feature class.
+
+    Intent is to create a feature that contains all the pairwise comparison you would like to make between scenarios.
+    Each scenario and field is added to the output dataset with the associated ID field and geometry.
+    Field output will be (FieldCount*Scenarios)+2. This is essentially for each parameter produce a field per-model + the ID and geometry fields.
+
+    Tool is currently written using python3 features (pathlib.Path, arcgis.features.GeoSeries/arcgis.features.GeoSeriesAccessor) so is unable to run in py2.
+    Planning on making it back compat. See Model Comparison for dbf loading examples/methods. Opted for 3 only for simplicity to start.
+
+    There is an assumption that the timesteps will all be equal. If this is not true things wont work. Will put a basic check in, but aggregation will resolve it.
+    """
+    def __init__(self):
+        """Convert the output of EXT_APP_FILTER to a feature class"""
+        self.label = "Process Model Results to GIS"
+        self.description = """
+        Convert the output of EXT_APP_FILTER to a feature class.
+        
+        Based on the input feature, tool will export and join the results of the model runs together into a single feature.
+
+        Feature will be ["ID", "SHAPE@", "FIELD_SCENARIO_1", "FIELD_SCENARIO_1", ..., "FIELD_SCENARIO_N" ]
+
+        based on a model run containing 3 scenarios ("BASE","AVERAGE", "MAX") and using a VELOCITY field, the results will be
+        ["ID","SHAPE@", "VELOCITY_BASE", "VELOCITY_AVERAGE", "VELOCITY_MAX"]
+
+        If you deselect the aggregate option an additional TIMESTEP field will be added. 
+
+        Maybe an option to join multiple fields?
+
+
+        """
+        self.canRunInBackground = False
+
+
+        self.feature_field_list = {
+            "Junctions": {
+                "fields": ["HEAD", "PRESSURE", "DEMAND"],
+                "model_file_name": "JUNCTOUT.DBF"
+            },
+            "Pipes": {
+                "fields": ["FLOW", "VELOCITY"],
+                "model_file_name": "PIPEOUT.DBF"
+                }
+        }
+
+    def getParameterInfo(self):
+        """Define parameter definitions"""
+        _mxd = arcpy.Parameter(
+            displayName="Model Project File",
+            name="mdl_file",
+            datatype="DEFile",
+            parameterType="Required",
+            direction="Input",
+        )
+        _mxd.filter.list = ['aprx']
+
+        _feature_type = arcpy.Parameter(
+            displayName="Feature Type",
+            name="feature_type",
+            datatype="GPString",
+            parameterType="Required",
+            direction="Input",
+            multiValue=False
+        )
+
+        _feature_fields = arcpy.Parameter(
+            displayName="Feature Fields",
+            name="feature_fields",
+            datatype="GPString",
+            parameterType="Required",
+            direction="Input",
+            multiValue=True
+        )
+
+        _feature = arcpy.Parameter(
+            displayName="Input Feature",
+            name="input_feature",
+            datatype="GPFeatureLayer",
+            parameterType="Required",
+            direction="Input",
+        )
+
+        _scenarios = arcpy.Parameter(
+            displayName="Model Scenarios",
+            name="scenario_list",
+            datatype="GPString",
+            parameterType="Required",
+            direction="Input",
+            multiValue=True
+        )
+
+        _output = arcpy.Parameter(
+            displayName="Output GDB",
+            name="in_features",
+            datatype="DEWorkspace",
+            parameterType="Required",
+            direction="Input"
+        )
+
+        _aggregate = arcpy.Parameter(
+            displayName="Aggregate Results",
+            name="in_place",
+            datatype="GPBoolean",
+            parameterType="Required",
+            direction="Input",
+        )
+        _aggregate.value = True
+
+        _output.filter.list = ['Local Database']
+
+        _feature_type.filter.type = "ValueList"
+        _feature_type.filter.list = [_ for _ in self.feature_field_list]
+
+        _feature_fields.filter.type = "ValueList"
+        _feature_fields.filter.list = []
+
+        _mxd.value = str(self._get_current_proj())
+        _scenarios.filter.type = "ValueList"
+        _scenarios.filter.list = self._get_scenarios(self._convert_mxd_to_model(_mxd.value.value))
+
+
+        params = [_mxd, _scenarios, _feature, _feature_type, _feature_fields , _output, _aggregate]
+        return params
+
+    def isLicensed(self):
+        """Set whether tool is licensed to execute."""
+        return True
+
+    def updateParameters(self, parameters):
+        """Modify the values and properties of parameters before internal
+        validation is performed.  This method is called whenever a parameter
+        has been changed."""
+        _mxd, _scenarios, _feature, _feature_type, _feature_fields , _output, _aggregate = parameters
+
+        if self._validate_is_model(_mxd.valueAsText):
+            _scenarios.filter.list = self._get_scenarios(self._convert_mxd_to_model(_mxd.value.value))
+        else:
+            _scenarios.filter.list = []
+
+        if _feature_type.altered:
+            _ft = _feature_type.valueAsText
+            _feature_fields.filter.list = self.feature_field_list.get(_ft, {}).get("fields")
+        else:
+            _feature_fields.filter.list = []
+
+        return
+
+    def updateMessages(self, parameters):
+        """Modify the messages created by internal validation for each tool
+        parameter.  This method is called after internal validation."""
+        return
+
+    def execute(self, parameters, messages):
+        """The source code of the tool."""
+        _mxd, _scenarios, _feature, _feature_type, _feature_fields , _output, _aggregate = parameters
+        
+        _mxd = self._convert_mxd_to_model(_mxd.valueAsText)
+        _scenarios = [str(_mxd/_) for _ in _scenarios.valueAsText.split(";")]
+        _feature = _feature.valueAsText
+        _feature_type = _feature_type.valueAsText
+        _feature_fields = _feature_fields.valueAsText.split(";")
+        _output = _output.valueAsText
+        _aggregate = True if _aggregate.valueAsText == 'true' else False
+
+        arcpy.AddMessage(locals())
+
+        return self.do_work(
+            _scenarios=_scenarios, 
+            _feature=_feature, 
+            _feature_type=_feature_type, 
+            _feature_fields=_feature_fields, 
+            _output=_output,
+            _aggregate=_aggregate
+        )
+
+    def _validate_is_model(self, _file):
+        if not isinstance(_file, Path):
+            _file = Path(_file)
+
+        if _file.suffix.upper() == ".APRX":
+            return True
+
+        else:
+            return False
+        
+    def _get_current_proj(self):
+        proj = arcpy.mp.ArcGISProject("CURRENT")
+        return Path(proj.filePath)
+
+    def _convert_mxd_to_model(self, mxd_path):
+        """should return ./mxd_path.out/SCENARIO from ./mxd_path.proj"""
+        if not isinstance(mxd_path, Path):
+            mxd_path = Path(mxd_path)
+
+        mxd_folder = mxd_path.parents[0]
+        mxd_name = mxd_path.stem+".OUT"
+        out_folder = (mxd_folder/mxd_name)/"SCENARIO"
+        return out_folder
+
+    def _get_scenarios(self, _folder):
+        if not isinstance(_folder, Path):
+            _folder = Path(_folder)
+        return [_.stem for _ in _folder.iterdir()]
+
+    def do_work(self, _scenarios, _feature, _feature_type, _feature_fields , _output, _aggregate):
+        """Perform work for the calculation and creation of the feature.
+
+        Accepts 5 required features
+
+        Args:
+            _scenarios ([list]): list of fully qualified scenarios paths. Each scenario is its own path. 
+            _feature ([type]): [description]
+            _feature_type ([type]): [description]
+            _feature_fields ([type]): [description]
+            _output ([type]): [description]
+            _aggregate ([type]): [description]
+        """
+        arcpy.AddMessage("Do work")
+        arcpy.AddMessage(locals())
+
+        model_data = self.load_model_features(_scenarios, _feature_type)
+        model_data = self.aggregate_features(model_data) if _aggregate == True else model_data
+        model_data = self.reduce_model_dataframe_fields(model_data, _feature_fields, _aggregate)
+
+        if not _aggregate:
+            self.validate_timestamp(model_data)
+
+        model_data = self.build_final_model_frames(model_data, _feature_fields, _aggregate)
+
+        feature = self.load_spatial_dataframe_featureclass(_feature)
+
+        results = self.join_results(feature, model_data)
+
+        results.spatial.to_featureclass(os.path.join(_output, "Feat"))
+        
+
+        pass
+
+    def _get_feature_file(self, _feature_type):
+        _feature_file = self.feature_field_list.get(_feature_type, {}).get("model_file_name")
+        if _feature_file is None:
+            raise ValueError("Invalid feature file. Did you enter the wrong feature type? {}".format(_feature_type))
+        return _feature_file
+
+    def load_spatial_dataframe_featureclass(self, _path):
+        """Load a dbf scenario path as a dataframe"""
+        if not isinstance(_path, str):
+            _path = str(_path)
+        return pd.DataFrame.spatial.from_featureclass(_path)
+    
+    def load_spatial_dataframe_table(self, _path):
+        """Load a dbf scenario path as a dataframe"""
+        if not isinstance(_path, str):
+            _path = str(_path)
+        return pd.DataFrame.spatial.from_table(_path)
+
+    def load_model_features(self, _scenarios, _feature_type):
+        feature_file = self._get_feature_file(_feature_type)
+        all_scenario_files = self._get_ext_app_features(_scenarios)
+        scenario_features = [_ for _ in all_scenario_files if _.name.upper()==feature_file]
+
+        output = {}
+        for scenario in scenario_features:
+            scenario_name = scenario.parents[0].name
+            output[scenario_name] = self.load_spatial_dataframe_table(scenario)
+        return output
+
+    def _get_ext_app_features(self, _scenarios):
+        """return all scenario dbf files in a scenario folder"""
+        output_features = []
+        for _ in _scenarios:
+            if not isinstance(_, Path):
+                _ = Path(_)
+                output_features += [_ for _ in _.iterdir() if _.suffix.upper()==".DBF"]
+        return output_features
+    
+    def aggregate_features(self, dataframe_dict):
+        """Apply aggregation to the dataset based on the ID field"""
+        output = {}
+        for _ in dataframe_dict:
+            output[_] = self.agg_df(dataframe_dict[_])
+        return output
+
+    def agg_df(self, _dataframe):
+        """Aggregate based on mean"""
+        return _dataframe.groupby("ID").mean()
+
+    def reduce_model_dataframe_fields(self, dataframe_dict, _feature_fields, _aggregate):
+        """Reduce the dataframes down to the set of fields only applicable for the modelling"""
+
+        _flds = ["ID"] 
+        _flds = _flds + ["TIME_STEP"] if not _aggregate else _flds
+        _feature_fields = _flds + _feature_fields
+
+        _feature_fields
+        output = {}
+        for _ in dataframe_dict:
+            _df = dataframe_dict[_]
+            if _df.index.name == "ID":
+                _df = _df.reset_index()
+
+            output[_] = _df[_feature_fields]
+        return output
+
+    def validate_timestamp(self, dataframe_dict):
+        """Validate in a non-aggregation scenarios only one set of timestamps exist. Only checks that all timestamps are the same COUNT not the same interval.
+        What this means is if you run a 1 hour over 24 steps (24 timestamp) or a 1 day over 24 steps (24 days) both will resolve to 24 and pass this check.
+        """
+        ts_count = []
+        for _ in dataframe_dict:
+            _df = dataframe_dict[_]
+            ts_count.append(len(_df['TIME_STEP'].value_counts().index))
+        if len(set(ts_count)) != 1:
+            raise ValueError("Multiple Timestamps detected. Either re-run with aggregation or validate your timestamps in the selected scenarios")
+
+    def build_final_model_frames(self, dataframe_dict, _feature_field, _aggregate):
+        _dfs = []
+        for _ in dataframe_dict:
+            _df = dataframe_dict[_]
+
+            if _aggregate:
+                _df = _df.groupby('ID').mean()[_feature_field]
+            else:
+                _df = _df.set_index(['ID', 'TIME_STEP'])[_feature_field]
+
+            _df = _df.rename(columns=dict(
+                zip(
+                    _df.columns,
+                    ["{}_{}".format(__, _) for __ in _df.columns]
+                )
+            ))
+            _dfs.append(_df)
+
+        _dfbase = None
+        for _ in _dfs:
+            if _dfbase is None:
+                _dfbase = _
+                continue
+            _dfbase = _dfbase.join(_, how='outer')
+        return _dfbase.reset_index().set_index('ID')
+
+    def join_results(self, _feature, dataframe_dict):
+        _feature = _feature[['ID', "SHAPE"]].set_index('ID')
+        return _feature.join(dataframe_dict)
+    
