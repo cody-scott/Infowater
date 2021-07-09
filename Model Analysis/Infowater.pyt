@@ -2605,5 +2605,5 @@ class ProcessModelResults(object):
 
     def join_results(self, _feature, dataframe_dict):
         _feature = _feature[['ID', "SHAPE"]].set_index('ID')
-        return _feature.join(dataframe_dict)
+        return _feature.join(dataframe_dict).reset_index()
     
