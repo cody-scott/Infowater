@@ -22,6 +22,7 @@ import argparse
 from collections import OrderedDict, defaultdict
 import numbers
 
+import logging
 import datetime
 
 try:
@@ -2298,13 +2299,29 @@ class ProcessModelResults(object):
 
         self.feature_field_list = {
             "Junctions": {
-                "fields": ["HEAD", "PRESSURE", "DEMAND"],
+                "fields": ["HEAD", "PRESSURE", "DEMAND", "QUALITY"],
                 "model_file_name": "JUNCTOUT.DBF"
             },
             "Pipes": {
-                "fields": ["FLOW", "VELOCITY"],
+                "fields": ["FLOW", "VELOCITY", "HEADLOSS", "HL1000", "QUALITY"],
                 "model_file_name": "PIPEOUT.DBF"
-                }
+                },
+            "Pump": {
+                "fields": ["UP_PRESS", "DOWN_PRESS", "FLOW", "HEAD_GAIN", "AVAIL_NPSH", "CAVITINDEX", "QUALITY"],
+                "model_file_name": "PUMPOUT.DBF"
+            },
+            "Reservoir": {
+                "fields": ["FLOW", "HEAD", "QUALITY"],
+                "model_file_name": "RESOUT.DBF"
+            },
+            "Tank": {
+                "fields": ["FLOW", "HEAD", "%_VOLUME", "STORAGE_VO", "LEVEL", "OVERFLOW_V", "QUALITY"],
+                "model_file_name": "TANKOUT.DBF"
+            },
+            "Valve": {
+                "fields": ["UP_PRESS", "DOWN_PRESS", "FLOW", "VELOCITY", "HEADLOSS", "STATUS", "SETTING", "QUALITY"],
+                "model_file_name": "VALVEOUT.DBF"
+            }
         }
 
         self._id_field = "ID"
@@ -2385,8 +2402,15 @@ class ProcessModelResults(object):
         _scenarios.filter.type = "ValueList"
         _scenarios.filter.list = self._get_scenarios(self._convert_mxd_to_model(_mxd.value.value))
 
+        return_feature = arcpy.Parameter(
+            displayName="Return Feature",
+            name="return_feature",
+            datatype="GPLayer",
+            parameterType="Derived",
+            direction="Output",
+        )
 
-        params = [_mxd, _scenarios, _feature, _feature_type, _feature_fields , _output, _aggregate]
+        params = [_mxd, _scenarios, _feature, _feature_type, _feature_fields , _output, _aggregate, return_feature]
         return params
 
     def isLicensed(self):
@@ -2397,7 +2421,7 @@ class ProcessModelResults(object):
         """Modify the values and properties of parameters before internal
         validation is performed.  This method is called whenever a parameter
         has been changed."""
-        _mxd, _scenarios, _feature, _feature_type, _feature_fields , _output, _aggregate = parameters
+        _mxd, _scenarios, _feature, _feature_type, _feature_fields , _output, _aggregate, return_feature = parameters
 
         if self._validate_is_model(_mxd.valueAsText):
             _scenarios.filter.list = self._get_scenarios(self._convert_mxd_to_model(_mxd.value.value))
@@ -2419,7 +2443,7 @@ class ProcessModelResults(object):
 
     def execute(self, parameters, messages):
         """The source code of the tool."""
-        _mxd, _scenarios, _feature, _feature_type, _feature_fields , _output, _aggregate = parameters
+        _mxd, _scenarios, _feature, _feature_type, _feature_fields , _output, _aggregate, return_feature = parameters
         
         _mxd = self._convert_mxd_to_model(_mxd.valueAsText)
         _scenarios = [str(_mxd/_) for _ in _scenarios.valueAsText.split(";")]
@@ -2429,9 +2453,10 @@ class ProcessModelResults(object):
         _output = _output.valueAsText
         _aggregate = True if _aggregate.valueAsText == 'true' else False
 
+
         arcpy.AddMessage(locals())
 
-        return self.do_work(
+        result = self.do_work(
             _scenarios=_scenarios, 
             _feature=_feature, 
             _feature_type=_feature_type, 
@@ -2440,6 +2465,13 @@ class ProcessModelResults(object):
             _aggregate=_aggregate
         )
 
+        out_feat = result.get("feature")
+        out_feat_name = out_feat.split("\\")[-1]
+        return_feature = arcpy.MakeFeatureLayer_management(out_feat, out_feat_name)[0]
+
+        arcpy.SetParameter(len(parameters)-1, return_feature)
+        return return_feature
+        
     def _validate_is_model(self, _file):
         if not isinstance(_file, Path):
             _file = Path(_file)
@@ -2486,13 +2518,15 @@ class ProcessModelResults(object):
         arcpy.AddMessage(locals())
 
         results = self.process_data(_feature, _scenarios, _feature_type, _feature_fields, _aggregate)
-        self.save_results(results, _output)
+        output_feature = self.save_results(results, _output)
 
-        return results
+        return {'feature': output_feature, 'data': results}
 
     def save_results(self, results, _output):
         _ct = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         output_feature = os.path.join(_output, "Model_Results_{}".format(_ct))
+
+        arcpy.AddMessage("Saving feature to {}".format(output_feature))
         fc = results.spatial.to_featureclass(output_feature)
         return output_feature
 
@@ -2522,6 +2556,9 @@ class ProcessModelResults(object):
 
     def process_model_data(self, _scenarios, _feature_type, _feature_fields, _aggregate):
         model_data = self.load_model_features(_scenarios, _feature_type)
+
+        self.validate_model_fields(model_data, _feature_fields)
+
         model_data = self.aggregate_features(model_data) if _aggregate == True else model_data
         model_data = self.reduce_model_dataframe_fields(model_data, _feature_fields, _aggregate)
 
@@ -2531,18 +2568,35 @@ class ProcessModelResults(object):
         return model_data
 
     def load_model_features(self, _scenarios, _feature_type):
+        arcpy.AddMessage("Loading Model Data")
         feature_file = self._get_feature_file(_feature_type)
         all_scenario_files = self._get_ext_app_features(_scenarios)
         scenario_features = [_ for _ in all_scenario_files if _.name.upper()==feature_file]
 
         output = {}
-        for scenario in scenario_features:
+        for i, scenario in enumerate(scenario_features, 1):
+            arcpy.AddMessage("Loading Scenario {} of {}".format(i, len(scenario_features)))
             scenario_name = scenario.parents[0].name
             output[scenario_name] = self.load_spatial_dataframe_table(scenario)
         return output
 
+    def validate_model_fields(self, model_dataframes, field_list):
+        for _ in model_dataframes:
+            _df = model_dataframes[_]
+            if not all([_ in _df.columns for _ in field_list]):
+                arcpy.AddError("One or more chosen fields are not in the model output")
+                arcpy.AddError("Possible issues may be incorrect type selection (junction vs point)")
+                
+                if "QUALITY" in field_list and "QUALITY" not in _df.columns:
+                    arcpy.AddError("Quality field selected, but not found in output fields")
+                    arcpy.AddError("If you are trying to join a quality run, all models must have the quality output")
+
+                raise arcpy.ExecuteError
+
+
     def _get_ext_app_features(self, _scenarios):
         """return all scenario dbf files in a scenario folder"""
+        logging.debug("getting all scenarios")
         output_features = []
         for _ in _scenarios:
             if not isinstance(_, Path):
@@ -2552,6 +2606,7 @@ class ProcessModelResults(object):
     
     def aggregate_features(self, dataframe_dict):
         """Apply aggregation to the dataset based on the ID field"""
+        arcpy.AddMessage("Aggregating Features")
         output = {}
         for _ in dataframe_dict:
             output[_] = self.agg_df(dataframe_dict[_])
@@ -2559,10 +2614,14 @@ class ProcessModelResults(object):
 
     def agg_df(self, _dataframe):
         """Aggregate based on mean"""
+        logging.debug("Running DF Agg func")
         return _dataframe.groupby("ID").mean()
 
     def reduce_model_dataframe_fields(self, dataframe_dict, _feature_fields, _aggregate):
         """Reduce the dataframes down to the set of fields only applicable for the modelling"""
+
+        arcpy.AddMessage("Reducing model dataframes to field set")
+        logging.debug(",".join(_feature_fields))
 
         _flds = ["ID"] 
         _flds = _flds + ['TIME', 'TIME_INT'] if not _aggregate else _flds
@@ -2575,7 +2634,8 @@ class ProcessModelResults(object):
             if _df.index.name == "ID":
                 _df = _df.reset_index()
 
-            _df = self.process_time_fields(_df)
+            if not _aggregate:
+                _df = self.process_time_fields(_df)
 
             output[_] = _df[_feature_fields]
         return output
@@ -2593,6 +2653,7 @@ class ProcessModelResults(object):
             _out = _vals[0] + _vals[1]/60
             return _out
 
+        logging.debug("processing time field")
         _df = _df.copy()
         _df['TIME'] = _df['TIME'].str.replace(" hrs", "")
         _df['TIME_INT'] = _df['TIME'].apply(convert_val)
@@ -2611,6 +2672,7 @@ class ProcessModelResults(object):
         Returns:
             [type]: [description]
         """
+        arcpy.AddMessage("Building Final Model Dataframes")
         _dfs = []
         for _ in dataframe_dict:
             _df = dataframe_dict[_]
@@ -2641,6 +2703,7 @@ class ProcessModelResults(object):
         Returns:
             pd.DataFrame: joined dataframe.
         """
+        arcpy.AddMessage("Merging Scenario Data")
         _dfbase = None
         for _ in _dfs:
             if _dfbase is None:
@@ -2650,9 +2713,28 @@ class ProcessModelResults(object):
         return _dfbase.reset_index().set_index('ID')
 
     def load_spatial_data(self, _feature):
+        """Load the feature path into a Spatially Enabled Dataframe
+
+        Args:
+            _feature (_str): path to the feature
+
+        Returns:
+            pd.DataFrame: Spatially enabled dataframe of the feature
+        """
+        logging.debug("Loading spatial feature {}".format(_feature))
         return self.load_spatial_dataframe_featureclass(_feature)
 
-    def join_results(self, _feature, dataframe_dict):
+    def join_results(self, _feature, scenario_df):
+        """Join the results of the scenario dataframes to the input feature.
+
+        Args:
+            _feature (pd.DataFrame): Spatial dataframe containing ID + SHAPE
+            dataframe_dict (pd.DataFrame): Dataframe containing the results of the modelling
+
+        Returns:
+            pd.DataFrame: Dataframe containing the join of the two
+        """
+        arcpy.AddMessage("Joining Spatial to Model")
         _feature = _feature[['ID', "SHAPE"]].set_index('ID')
-        return _feature.join(dataframe_dict).reset_index()
+        return _feature.join(scenario_df).reset_index()
     
