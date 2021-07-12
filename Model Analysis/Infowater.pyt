@@ -2307,6 +2307,9 @@ class ProcessModelResults(object):
                 }
         }
 
+        self._id_field = "ID"
+        self._time_field = "TIME_STEP"
+
     def getParameterInfo(self):
         """Define parameter definitions"""
         _mxd = arcpy.Parameter(
@@ -2482,23 +2485,16 @@ class ProcessModelResults(object):
         arcpy.AddMessage("Do work")
         arcpy.AddMessage(locals())
 
-        model_data = self.load_model_features(_scenarios, _feature_type)
-        model_data = self.aggregate_features(model_data) if _aggregate == True else model_data
-        model_data = self.reduce_model_dataframe_fields(model_data, _feature_fields, _aggregate)
+        results = self.process_data(_feature, _scenarios, _feature_type, _feature_fields, _aggregate)
+        self.save_results(results, _output)
 
-        if not _aggregate:
-            self.validate_timestamp(model_data)
+        return results
 
-        model_data = self.build_final_model_frames(model_data, _feature_fields, _aggregate)
-
-        feature = self.load_spatial_dataframe_featureclass(_feature)
-
-        results = self.join_results(feature, model_data)
-
-        results.spatial.to_featureclass(os.path.join(_output, "Feat"))
-        
-
-        pass
+    def save_results(self, results, _output):
+        _ct = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_feature = os.path.join(_output, "Model_Results_{}".format(_ct))
+        fc = results.spatial.to_featureclass(output_feature)
+        return output_feature
 
     def _get_feature_file(self, _feature_type):
         _feature_file = self.feature_field_list.get(_feature_type, {}).get("model_file_name")
@@ -2517,6 +2513,22 @@ class ProcessModelResults(object):
         if not isinstance(_path, str):
             _path = str(_path)
         return pd.DataFrame.spatial.from_table(_path)
+
+    def process_data(self, _feature, _scenarios, _feature_type, _feature_fields, _aggregate):
+        model_data = self.process_model_data(_scenarios, _feature_type, _feature_fields, _aggregate)
+        feature = self.load_spatial_data(_feature)
+        results = self.join_results(feature, model_data)
+        return results
+
+    def process_model_data(self, _scenarios, _feature_type, _feature_fields, _aggregate):
+        model_data = self.load_model_features(_scenarios, _feature_type)
+        model_data = self.aggregate_features(model_data) if _aggregate == True else model_data
+        model_data = self.reduce_model_dataframe_fields(model_data, _feature_fields, _aggregate)
+
+        model_data = self.build_final_model_frames(model_data, _feature_fields, _aggregate)
+        model_data = self.join_model_frames(model_data)
+
+        return model_data
 
     def load_model_features(self, _scenarios, _feature_type):
         feature_file = self._get_feature_file(_feature_type)
@@ -2553,7 +2565,7 @@ class ProcessModelResults(object):
         """Reduce the dataframes down to the set of fields only applicable for the modelling"""
 
         _flds = ["ID"] 
-        _flds = _flds + ["TIME_STEP"] if not _aggregate else _flds
+        _flds = _flds + ['TIME', 'TIME_INT'] if not _aggregate else _flds
         _feature_fields = _flds + _feature_fields
 
         _feature_fields
@@ -2563,29 +2575,50 @@ class ProcessModelResults(object):
             if _df.index.name == "ID":
                 _df = _df.reset_index()
 
+            _df = self.process_time_fields(_df)
+
             output[_] = _df[_feature_fields]
         return output
 
-    def validate_timestamp(self, dataframe_dict):
-        """Validate in a non-aggregation scenarios only one set of timestamps exist. Only checks that all timestamps are the same COUNT not the same interval.
-        What this means is if you run a 1 hour over 24 steps (24 timestamp) or a 1 day over 24 steps (24 days) both will resolve to 24 and pass this check.
+    def process_time_fields(self, _df):
+        """Process the `TIME` field in the dataframe to a cleaned version (remove " hrs")
+        Add an integer representation of the time with the value being HOUR + SECOND/60.
+
+        copy of a dataframe is made to avoid changing reference.
+        Args:
+            _df (pd.DataFrame): processed dataframe.
         """
-        ts_count = []
-        for _ in dataframe_dict:
-            _df = dataframe_dict[_]
-            ts_count.append(len(_df['TIME_STEP'].value_counts().index))
-        if len(set(ts_count)) != 1:
-            raise ValueError("Multiple Timestamps detected. Either re-run with aggregation or validate your timestamps in the selected scenarios")
+        def convert_val(_val):
+            _vals = [int(_) for _ in _val.split(":")]
+            _out = _vals[0] + _vals[1]/60
+            return _out
+
+        _df = _df.copy()
+        _df['TIME'] = _df['TIME'].str.replace(" hrs", "")
+        _df['TIME_INT'] = _df['TIME'].apply(convert_val)
+
+        return _df
 
     def build_final_model_frames(self, dataframe_dict, _feature_field, _aggregate):
+        """Constructs dataframes to the final state with the columns named by scenario.
+        If non aggregated, ie by time, then it also includes the fields TIME/TIME_INT for a column.
+
+        Args:
+            dataframe_dict (dict(str:pd.DataFrame)): dictionary with scenario:dataframe key/value
+            _feature_field (list(str)): list of strings of the fields to limit to, IE: ["HEAD", "PRESSURE"]
+            _aggregate (bool): flag if aggregation taking place
+
+        Returns:
+            [type]: [description]
+        """
         _dfs = []
         for _ in dataframe_dict:
             _df = dataframe_dict[_]
 
             if _aggregate:
-                _df = _df.groupby('ID').mean()[_feature_field]
+                _df = _df.set_index('ID')[_feature_field]
             else:
-                _df = _df.set_index(['ID', 'TIME_STEP'])[_feature_field]
+                _df = _df.set_index(['ID', 'TIME', "TIME_INT"])[_feature_field]
 
             _df = _df.rename(columns=dict(
                 zip(
@@ -2594,7 +2627,20 @@ class ProcessModelResults(object):
                 )
             ))
             _dfs.append(_df)
+        return _dfs
 
+    def join_model_frames(self, _dfs):
+        """Joins the results of renamed columns to a single dataset
+        ID column should have been set in prior step `build_final_model_frames`.
+
+        Result is an OUTER join of every frame based on the index. This should resolve different timestep models.
+
+        Args:
+            _dfs (list(pd.DataFrame)): list of dataframes processed with the proper index columns
+
+        Returns:
+            pd.DataFrame: joined dataframe.
+        """
         _dfbase = None
         for _ in _dfs:
             if _dfbase is None:
@@ -2602,6 +2648,9 @@ class ProcessModelResults(object):
                 continue
             _dfbase = _dfbase.join(_, how='outer')
         return _dfbase.reset_index().set_index('ID')
+
+    def load_spatial_data(self, _feature):
+        return self.load_spatial_dataframe_featureclass(_feature)
 
     def join_results(self, _feature, dataframe_dict):
         _feature = _feature[['ID', "SHAPE"]].set_index('ID')
