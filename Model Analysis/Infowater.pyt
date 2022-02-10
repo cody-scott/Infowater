@@ -1,6 +1,7 @@
 import warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
+
 import sys
 import re
 
@@ -9,7 +10,13 @@ py_3 = True if sys.version_info[0] > 2 else False
 if not py_3:
     import arcview
 
-import arcpy
+import logging
+import datetime
+
+try:
+    import arcpy
+except:
+    logging.warning("ArcPy not available")
 
 import pandas as pd
 import numpy as np
@@ -18,12 +25,12 @@ import os
 import re
 
 import argparse
+import cProfile
 
 from collections import OrderedDict, defaultdict
 import numbers
 
-import logging
-import datetime
+logging.getLogger('matplotlib.font_manager').disabled = True
 
 try:
     from openpyxl.utils.dataframe import dataframe_to_rows
@@ -40,6 +47,7 @@ import matplotlib.pyplot as plt
 import matplotlib
 from matplotlib import cm as _mlp_cm
 from matplotlib.backends.backend_pdf import PdfPages
+matplotlib.use('Agg')
 
 try:
     # this will only go if in arcgis pro
@@ -59,14 +67,15 @@ class Toolbox(object):
         # List of tool classes associated with this toolbox
         self.tools = [
             CreateComparisonTemplate, 
-            AnalyzeModelReport, 
-            ConvertModelReport, 
             ModelComparison, 
             ModelDTW
         ]
 
         if py_3:
-            self.tools.append(ProcessModelResults)
+            self.tools += [
+                ProcessModelResults,
+                AnalyzeModelReport
+            ]
 
 
 class CreateComparisonTemplate(object):
@@ -168,6 +177,14 @@ class CreateComparisonTemplate(object):
 
 
 class AnalyzeModelReport(object):
+    meta_params = {
+        'model_output_file': {
+            'dialog_reference': """""",
+            'python_reference': """""",
+            "tags": ['infowater', 'report', 'rpt']
+        }
+    }
+
     def __init__(self):
         """Define the tool (tool name is the name of the class)."""
         self.label = "Analyze Model Report"
@@ -177,14 +194,23 @@ class AnalyzeModelReport(object):
 
     def getParameterInfo(self):
         """Define parameter definitions"""
-        param0 = arcpy.Parameter(
-            displayName="Model Output File",
-            name="model_output_file",
+        _mxd = arcpy.Parameter(
+            displayName="Model Project File",
+            name="mdl_file",
             datatype="DEFile",
             parameterType="Required",
             direction="Input",
         )
-        param0.filter.list = ["RPT"]
+        _mxd.filter.list = ['aprx']
+
+        _scenarios = arcpy.Parameter(
+            displayName="Model Scenario",
+            name="scenario_list",
+            datatype="GPString",
+            parameterType="Required",
+            direction="Input",
+            multiValue=False
+        )
 
         param1 = arcpy.Parameter(
             displayName="Output Folder",
@@ -212,7 +238,14 @@ class AnalyzeModelReport(object):
             direction="Input",
         )
         param3.filter.list = ['xls', 'xlsx']
-        params = [param0, param1, param2, param3]
+
+        _scenarios.filter.type = "ValueList"
+        _scenarios.filter.list = [] if _mxd.value is None else self._get_scenarios(self._convert_mxd_to_model(_mxd.value.value))
+
+        # _scenarios.parameterDependencies = [0]
+        # _mxd.parameterDependencies = ["scenario_list"]
+
+        params = [_mxd, _scenarios, param1, param2, param3]
         return params
 
     def isLicensed(self):
@@ -223,11 +256,64 @@ class AnalyzeModelReport(object):
         """Modify the values and properties of parameters before internal
         validation is performed.  This method is called whenever a parameter
         has been changed."""
+        _mxd = parameters[0]
+        _scenario = parameters[1]
+
+        if self._validate_is_model(_mxd.valueAsText):
+            _scenario.filter.list = self._get_scenarios(self._convert_mxd_to_model(_mxd.value.value))
+        else:
+            _scenario.filter.list = []
         return
+    
+    def _validate_is_model(self, _file):
+        if _file is None:
+            return False
+
+        if not isinstance(_file, Path):
+            _file = Path(_file)
+
+        if _file.suffix.upper() == ".APRX":
+            return True
+
+        else:
+            return False
+        
+    def _get_current_proj(self):
+        try:
+            proj = arcpy.mp.ArcGISProject("CURRENT")
+            proj = Path(proj)
+        except:
+            arcpy.AddWarning("No Project file Found")
+            proj = None
+        finally:
+            return proj
+
+    def _convert_mxd_to_model(self, mxd_path):
+        """should return ./mxd_path.out/SCENARIO from ./mxd_path.proj"""
+        if not isinstance(mxd_path, Path):
+            mxd_path = Path(mxd_path)
+
+        mxd_folder = mxd_path.parents[0]
+        mxd_name = mxd_path.stem+".OUT"
+        out_folder = (mxd_folder/mxd_name)/"SCENARIO"
+        return out_folder
+
+    def _get_scenarios(self, _folder):
+        if not isinstance(_folder, Path):
+            _folder = Path(_folder)
+        if not _folder.is_dir(): return []
+        return [_.stem for _ in _folder.iterdir()]
 
     def updateMessages(self, parameters):
         """Modify the messages created by internal validation for each tool
         parameter.  This method is called after internal validation."""
+        _mxd = parameters[0]
+        _scenario = parameters[1]
+
+        if _mxd.value is not None and _scenario.value is not None:
+            _pt = self._convert_mxd_to_model(_mxd.value.value)/_scenario.value
+            if not _pt.exists():
+                _scenario.setErrorMessage("No output report in scenario: {}".format(_scenario.value))
         return
 
     def execute(self, parameters, messages):
@@ -238,15 +324,18 @@ class AnalyzeModelReport(object):
             arcpy.AddWarning("Need to run in ArcGIS Pro")
             raise
     
+        _mxd = parameters[0].valueAsText
+        _scenario = parameters[1].valueAsText
 
-        file_path = parameters[0].valueAsText
-        output_folder= parameters[1].valueAsText
-        output_name= parameters[2].valueAsText
-        zone_sheet= parameters[3].valueAsText
+        file_path = str(self._convert_mxd_to_model(_mxd)/_scenario/'HYDQUA.RPT')
+        
+        output_folder= parameters[2].valueAsText
+        output_name= parameters[3].valueAsText
+        zone_sheet= parameters[4].valueAsText
 
+        # arcpy.AddMessage(vars())
         self.do_work(file_path, output_folder, output_name, zone_sheet)
         
-
     def do_work(self, file_path, output_folder, output_name, zone_sheet):
         """Provides an analysis for reviewing model report output files. 
         Main function loop to process report.
@@ -1021,7 +1110,7 @@ class ModelComparison(object):
         param9.values = "Median"
         param9.filter.list = ["Mean", "Median", "None"]
 
-        param10.values = True
+        param10.values = False
 
         params = [
             param0, param1, param2, param3, param4, 
@@ -1067,10 +1156,10 @@ class ModelComparison(object):
         _zone = parameters[4].valueAsText
         _scada = parameters[5].valueAsText
 
-        _new_lbl = parameters[6].valueAsText
+        _new_lbl = parameters[7].valueAsText
         _new_lbl = _new_lbl if _new_lbl != '' else None
         
-        _old_lbl = parameters[7].valueAsText
+        _old_lbl = parameters[6].valueAsText
         _old_lbl = _old_lbl if _old_lbl != '' else None
 
         _pdf_prefix = parameters[8].valueAsText
@@ -1087,12 +1176,9 @@ class ModelComparison(object):
 
         _excel = False if parameters[10].valueAsText.upper() == "FALSE" else None
 
-        # [arcpy.AddMessage(str(i)) for i in [
-        #     _new_model, _old_model, _comp_sheet, _scada, 
-        #     _zone, _pdf_f, _new_lbl, _old_lbl, _pdf_prefix, 
-        #     _excel
-        # ]]
-        # return
+        
+        # pr = cProfile.Profile()
+        # pr.enable()
 
         self.do_work(
             new_model=_new_model, 
@@ -1104,7 +1190,12 @@ class ModelComparison(object):
             new_model_label=_new_lbl, 
             old_model_label=_old_lbl, 
             pdf_prefix=_pdf_prefix, 
-            export_excel=_excel)
+            export_excel=_excel
+        )
+        
+        # pr.disable()
+        # pr.dump_stats('I:\EP_GISData\Tools and Reference\Infowater\Model Analysis\debug\profile')
+
         return
 
     def do_work(self, new_model, old_model, comparison_sheet, scada, zone, pdf_folder, new_model_label=None, old_model_label=None, pdf_prefix=None, export_excel=None):
@@ -1133,8 +1224,9 @@ class ModelComparison(object):
         _export_excel = export_excel if export_excel is False else True
         
         arcpy.env.overwriteOutput=True
-        _new_scenario_data = self.load_model_data(new_model)
-        _old_scenario_data = self.load_model_data(old_model)
+        _new_scenario_data = self.load_model_data(new_model, scenario_name="New")
+        _old_scenario_data = self.load_model_data(old_model, scenario_name="Old")
+
         _comparison_table = self.load_comparison_file(comparison_sheet)
         _sc = self.load_scada(scada)
 
@@ -1234,6 +1326,7 @@ class ModelComparison(object):
         Returns:
             DataFrame: data frame of the comparison file
         """
+        arcpy.AddMessage("Loading Comparison File")
         return pd.read_excel(file_path)
 
     def load_scada(self, scada_path):
@@ -1249,6 +1342,7 @@ class ModelComparison(object):
             DataFrame: Data frame of the scada data. Returns None if error
         """
         try:
+            arcpy.AddMessage("Loading Scada Data")
             if ".csv" in scada_path:
                 df = pd.read_csv(scada_path)
                 fm = '%Y-%m-%d %H:%M:%S'
@@ -1265,6 +1359,7 @@ class ModelComparison(object):
 
             return df
         except:
+            arcpy.AddMessage("No Scada Data Found")
             return None
 
     def load_dbf(self, scenario_path, dbf_name):
@@ -1300,15 +1395,19 @@ class ModelComparison(object):
             arcpy.AddError(e)
             return None
 
-    def load_model_data(self, scenario):
+    def load_model_data(self, scenario, scenario_name=None):
         """Loads the model components from the scenario folder
 
         Args:
             scenario (string): path of the scenario
+            scenario_name (string, optional): Name of the scenario. Defaults to None.
 
         Returns:
             dict(string: DataFrame, string: DataFrame, string: DataFrame): dictionary of the junctions, pipes and tanks from the model data
         """
+        msg = " ".join([_ for _ in ["Loading", scenario_name, "Model Data"] if _ is not None])
+        arcpy.AddMessage(msg)
+
         jct_data = self.load_dbf(scenario, "JunctOut.dbf")
         ppe_data = self.load_dbf(scenario, "PipeOut.dbf")
         tank_data = self.load_dbf(scenario, "TankOut.dbf")
@@ -2375,7 +2474,7 @@ class ProcessModelResults(object):
 
         _output = arcpy.Parameter(
             displayName="Output GDB",
-            name="in_features",
+            name="output_gdb",
             datatype="DEWorkspace",
             parameterType="Required",
             direction="Input"
@@ -2383,7 +2482,7 @@ class ProcessModelResults(object):
 
         _aggregate = arcpy.Parameter(
             displayName="Aggregate Results",
-            name="in_place",
+            name="aggregate",
             datatype="GPBoolean",
             parameterType="Required",
             direction="Input",
@@ -2398,9 +2497,9 @@ class ProcessModelResults(object):
         _feature_fields.filter.type = "ValueList"
         _feature_fields.filter.list = []
 
-        _mxd.value = str(self._get_current_proj())
+        _mxd.value = self._get_current_proj()
         _scenarios.filter.type = "ValueList"
-        _scenarios.filter.list = self._get_scenarios(self._convert_mxd_to_model(_mxd.value.value))
+        _scenarios.filter.list = [] if _mxd.value is None else self._get_scenarios(self._convert_mxd_to_model(_mxd.value.value))
 
         return_feature = arcpy.Parameter(
             displayName="Return Feature",
@@ -2473,6 +2572,9 @@ class ProcessModelResults(object):
         return return_feature
         
     def _validate_is_model(self, _file):
+        if _file is None:
+            return False
+
         if not isinstance(_file, Path):
             _file = Path(_file)
 
@@ -2483,8 +2585,14 @@ class ProcessModelResults(object):
             return False
         
     def _get_current_proj(self):
-        proj = arcpy.mp.ArcGISProject("CURRENT")
-        return Path(proj.filePath)
+        try:
+            proj = arcpy.mp.ArcGISProject("CURRENT")
+            proj = Path(proj)
+        except:
+            arcpy.AddWarning("No Project file Found")
+            proj = None
+        finally:
+            return proj
 
     def _convert_mxd_to_model(self, mxd_path):
         """should return ./mxd_path.out/SCENARIO from ./mxd_path.proj"""
@@ -2499,6 +2607,7 @@ class ProcessModelResults(object):
     def _get_scenarios(self, _folder):
         if not isinstance(_folder, Path):
             _folder = Path(_folder)
+        if not _folder.is_dir(): return []
         return [_.stem for _ in _folder.iterdir()]
 
     def do_work(self, _scenarios, _feature, _feature_type, _feature_fields , _output, _aggregate):

@@ -8,6 +8,8 @@ arcpy.env.overwriteOutput = True
 
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(message)s')
 
+import sys
+py_3 = True if sys.version_info[0] > 2 else False
 
 def arc_log_output(message, m_type=None):
     """
@@ -378,7 +380,7 @@ class NodeCheck(object):
         _out_folder = parameters[1].valueAsText
         _join_distance = parameters[2].valueAsText
 
-        _temp_folder = "in_memory"
+        _temp_folder = "in_memory" if not py_3 else "memory"
         if parameters[3].valueAsText is not None:
             _temp_folder = parameters[3].valueAsText
 
