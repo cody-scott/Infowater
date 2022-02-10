@@ -43,11 +43,12 @@ except:
     arcpy.AddMessage("No openpyxl")
 
 #model comparison imports
-import matplotlib.pyplot as plt
 import matplotlib
+matplotlib.use('Agg')
+
+import matplotlib.pyplot as plt
 from matplotlib import cm as _mlp_cm
 from matplotlib.backends.backend_pdf import PdfPages
-matplotlib.use('Agg')
 
 try:
     # this will only go if in arcgis pro
@@ -1380,8 +1381,16 @@ class ModelComparison(object):
             _out_table = _out_table.replace(".dbf", "")
 
             if py_3:
-                mem_table = arcpy.conversion.TableToTable(_in_table, "in_memory", "{}_table".format(_out_table))[0]
-                df = pd.DataFrame.spatial.from_table(mem_table)
+                # mem_table = arcpy.conversion.TableToTable(_in_table, "in_memory", "{}_table".format(_out_table))[0]
+                # df = pd.DataFrame.spatial.from_table(mem_table) 
+                df = pd.DataFrame.spatial.from_table(_in_table) 
+                df = df.rename(
+                    columns={
+                            _: _.replace("%", "F_") 
+                            for _ in df.columns 
+                            if "%" in _
+                        }
+                )
             else:
                 _tmp_tlb = arcpy.TableToTable_conversion(_in_table, "in_memory", "{}_table".format(_out_table))[0]
                 data = []
@@ -2831,7 +2840,9 @@ class ProcessModelResults(object):
             pd.DataFrame: Spatially enabled dataframe of the feature
         """
         logging.debug("Loading spatial feature {}".format(_feature))
-        return self.load_spatial_dataframe_featureclass(_feature)
+        f = self.load_spatial_dataframe_featureclass(_feature)
+        f = f.rename(columns={"MOID": "ID"})
+        return f
 
     def join_results(self, _feature, scenario_df):
         """Join the results of the scenario dataframes to the input feature.
