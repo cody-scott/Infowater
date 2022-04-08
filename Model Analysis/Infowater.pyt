@@ -137,6 +137,7 @@ class CreateComparisonTemplate(object):
             'New_Id',
             'Info',
             'SCADA_TAG'
+            'Elevation'
         ]
 
         _df_data = [[
@@ -146,7 +147,8 @@ class CreateComparisonTemplate(object):
             "JCT_1",
             "JCT_20",
             "Example Junction",
-            "SampleTagJunction"
+            "SampleTagJunction",
+            "300"
         ], [
             "Sample Zone",
             "Site A",
@@ -155,6 +157,7 @@ class CreateComparisonTemplate(object):
             "PPE_20",
             "Example Pipe",
             "SampleTagPipe"
+            "301"
         ]]
 
         _df = pd.DataFrame(_df_data, columns=comparison_columns)
@@ -1105,7 +1108,7 @@ class ModelComparison(object):
         param1.filter.list = ['File System']
         param2.filter.list = ['xls', 'xlsx']
         param3.filter.list = ['File System']
-        param5.filter.list = ['xls', 'xlsx']
+        param5.filter.list = ['xls', 'xlsx', 'csv']
 
         param9.filter.type = "ValueList"
         param9.values = "Median"
@@ -1279,6 +1282,9 @@ class ModelComparison(object):
         _sites = sorted(data["Site"].unique())
         for i_enum, site in enumerate(_sites):
             arcpy.AddMessage("Site {} of {}\t{}".format(i_enum+1, len(_sites), site))
+
+            if site=="Strange Street":
+                x=1
             self.site_base(data.loc[data["Site"] == site], pdf_f)
 
         arcpy.AddMessage("Plotting Points of Interest for zone")
@@ -1342,6 +1348,10 @@ class ModelComparison(object):
         Returns:
             DataFrame: Data frame of the scada data. Returns None if error
         """
+        if scada_path is None:
+            arcpy.AddMessage('No SCADA path provided')
+            return None
+        
         try:
             arcpy.AddMessage("Loading Scada Data")
             if ".csv" in scada_path:
@@ -1352,15 +1362,19 @@ class ModelComparison(object):
                 fm = "%m/%d/%Y %H:%M:%S"
 
             df.head()
-            df['Time'] = pd.to_datetime(df['Time'], format=fm)
-            df = df.set_index('Time')
+
+            t_col = "Timestamp" if "Timestamp" in df.columns else 'Time'
+
+            df[t_col] = pd.to_datetime(df[t_col], format=fm)
+            df = df.set_index(t_col)
 
             df['Minute'] = df.index.minute
             df['Hour'] = df.index.hour
 
             return df
-        except:
-            arcpy.AddMessage("No Scada Data Found")
+        except Exception as e:
+            arcpy.AddMessage("Error loading SCADA")
+            arcpy.AddMessage(e)
             return None
 
     def load_dbf(self, scenario_path, dbf_name):
@@ -1773,14 +1787,24 @@ class ModelComparison(object):
             if not data["SCADA_TAG"].isna().any():
                 try:
                     scada_tag = data["SCADA_TAG"]
+                    
                     scada_data = self.sc
                     scada_data = scada_data.set_index(scada_data.index.hour, append=True)[scada_tag].unstack()
+
+                    if np.all(scada_data.isna()):
+                        raise KeyError(scada_tag.values[0])
+
+                    elev = self.get_scada_elevation(data)
+                    scada_data = scada_data + elev
+
                     scada_data.plot.box(showfliers=False, notch=True, ax=ax, color=self.cls['SCADA'])
 
                     scada_med =self.sc[scada_tag].groupby(self.sc[scada_tag].index.hour).median()
+                    scada_med = scada_med+elev
+
                     ax.plot(scada_med.index+1,scada_med.values,color=self.cls['SCADA'], label="SCADA")
 
-                    self.plot_daily_avg(self.sc[scada_tag], ax, self.cls['SCADA'], "SCADA")
+                    self.plot_daily_avg(self.sc[scada_tag]+elev, ax, self.cls['SCADA'], "SCADA")
                     
                 except KeyError:
                     print("No data for tag {}".format(scada_tag.values[0]))
@@ -1790,6 +1814,13 @@ class ModelComparison(object):
         ax.set_xlim((1, 24))
         ax.set_xticks(list(range(1, 24)))
         ax.set_xticklabels(list(range(1, 24)))
+
+    def get_scada_elevation(self, data):
+        try:
+            elev = data['Elevation'].fillna(0)
+            return elev.values[0]
+        except:
+            return 0
 
     def test_lims(self, ax):
         """Check the limits of the supplied plot.

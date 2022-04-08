@@ -7,4 +7,6 @@
 **.ipynb
 
 run_tool.py
+run_file.py
+**test_data/
 *.pdf
