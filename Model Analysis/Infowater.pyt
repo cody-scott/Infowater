@@ -1753,6 +1753,20 @@ class ModelComparison(object):
         if ax.get_ylim()[1] > 100:
             ax.set_ylim((ax.get_ylim()[0], 100.2))
 
+    def _get_scenario_id_data(self, scenario, comparison_data, feature_type, id_var):
+        s_data = scenario[feature_type]
+        return s_data.loc[s_data["ID"].isin(comparison_data[id_var])].set_index("TIME_STEP")
+
+    def _correct_all_negative(self, data, y_field):
+        data = data.copy()
+        data_var = data[y_field]
+
+        if (data_var.min() <= 0) and (data_var.max() <= 0):
+            data_var = data_var.abs()
+        
+        data[y_field] = data_var
+        return data
+
     def plot_generic(self, data, ax, p, y_field):
         """This is the generic plotting function that the individual types pass to
         Reasoning is its easier to apply a single style of plotting and just tell the plot to try and plot in the same way each time
@@ -1765,20 +1779,23 @@ class ModelComparison(object):
             p (string): type of feature plotting. This is going to pull the model data
             y_field (string): y field (column) that will be used for the vertical
         """
+
+        old_data = self._get_scenario_id_data(self.old_scenario_data, data, p, "Old_Id")
+        new_data = self._get_scenario_id_data(self.new_scenario_data, data, p, "New_Id")
+
         ls = [
-            [self.new_scenario_data, "New_Id", self.cls["NewData"], self.new_model_label],
-            [self.old_scenario_data, "Old_Id", self.cls["OldData"], self.old_model_label],
+            [new_data, self.cls["NewData"], self.new_model_label],
+            [old_data, self.cls["OldData"], self.old_model_label],
         ]
         for i in ls:
-            scenario_data, id_f, color, lbl = i
-            s_data = scenario_data[p]
-            s_data = s_data.loc[s_data["ID"].isin(data[id_f])].set_index(
-                "TIME_STEP")
+            s_data, color, lbl = i            
 
             if s_data.empty:
                 _msg_content = self.get_warning_message_content(data)
                 arcpy.AddWarning("{} - No data".format(_msg_content))
                 continue
+
+            s_data = self._correct_all_negative(s_data, y_field)
             
             ax.plot(s_data[y_field], label=lbl, color=color)
             self.plot_daily_avg(s_data[y_field], ax, color, lbl)
