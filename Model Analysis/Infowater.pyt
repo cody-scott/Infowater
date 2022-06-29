@@ -1397,7 +1397,14 @@ class ModelComparison(object):
             if py_3:
                 # mem_table = arcpy.conversion.TableToTable(_in_table, "in_memory", "{}_table".format(_out_table))[0]
                 # df = pd.DataFrame.spatial.from_table(mem_table) 
-                df = pd.DataFrame.spatial.from_table(_in_table) 
+                try:
+                    df = pd.DataFrame.spatial.from_table(_in_table) 
+                except:
+                    sc = arcpy.da.SearchCursor(_in_table, "*")
+                    data = sc._as_narray()
+                    df = pd.DataFrame(data=data)
+                    del sc
+
                 df = df.rename(
                     columns={
                             _: _.replace("%", "F_") 
@@ -2712,7 +2719,15 @@ class ProcessModelResults(object):
         """Load a dbf scenario path as a dataframe"""
         if not isinstance(_path, str):
             _path = str(_path)
-        return pd.DataFrame.spatial.from_table(_path)
+        return self._load_frame_table(_path)
+        return pd.DataFrame.spatial.from_table(_path, fields="*")
+
+    def _load_frame_table(self, _path):
+        sc = arcpy.da.SearchCursor(_path, "*")
+        data = sc._as_narray()
+        df = pd.DataFrame(data=data)
+        del sc
+        return df
 
     def process_data(self, _feature, _scenarios, _feature_type, _feature_fields, _aggregate):
         model_data = self.process_model_data(_scenarios, _feature_type, _feature_fields, _aggregate)
